@@ -4,10 +4,12 @@
 // Controls:
 //   Pulse In 1          : Clock input (rising edge = new beat)
 //   CV In 1 > ~0V       : Freeze (stops recording, keeps looping)
+//   CV In 2             : Bipolar mod — added to Knob X and Knob Y values
 //   Pulse In 2          : External gate (used in Switch MID mode)
 //   Main Knob           : 5 zones → ratchet division {1,2,3,4,6}
 //                         Remainder within zone → reverse probability threshold
-//   Knob X              : Degradation amount (bitcrush + decimation depth)
+//   Knob X              : Degradation amount — first half: decimation only (1→16x);
+//                         second half: decimation stays max, adds bitcrush (0→7 bits)
 //   Knob Y              : Degradation probability (how often degradation applies)
 //   Switch UP (latch)   : Probabilistic mode — glitch if rng < prob_thresh
 //   Switch MID          : External gate mode — glitch while Pulse In 2 HIGH
@@ -97,11 +99,16 @@ public:
     void __not_in_flash_func(ProcessSample)() override
     {
         // ----------------------------------------------------------------
-        // 1. Read raw knob values
+        // 1. Read raw knob values; CV In 2 modulates X and Y (bipolar)
         // ----------------------------------------------------------------
         const int32_t knob_main = KnobVal(Knob::Main);  // 0..4095
-        const int32_t knob_x    = KnobVal(Knob::X);     // 0..4095
-        const int32_t knob_y    = KnobVal(Knob::Y);     // 0..4095
+        const int32_t cv2       = CVIn2();               // -2048..2047
+
+        auto clamp = [](int32_t v) -> int32_t {
+            return v < 0 ? 0 : (v > 4095 ? 4095 : v);
+        };
+        const int32_t knob_x = clamp(KnobVal(Knob::X) + cv2);  // 0..4095
+        const int32_t knob_y = clamp(KnobVal(Knob::Y) + cv2);  // 0..4095
 
         // ----------------------------------------------------------------
         // 2. Big Knob zone decode
@@ -119,16 +126,22 @@ public:
 
         // ----------------------------------------------------------------
         // 3. Degradation parameters from Knob X
-        //    crush_bits 0..7  — how many LSBs to mask (0 = bypass)
-        //    dec_factor 1..16 — sample-hold step size  (1 = bypass)
+        //    First half  (0–2047): decimation only, dec_factor 1→16, crush_bits=0
+        //    Second half (2048–4095): dec_factor fixed at 16, crush_bits 0→7
         // ----------------------------------------------------------------
-        const int32_t crush_bits = knob_x >> 9;          // 0..7
-        const int32_t dec_factor = 1 + (knob_x >> 8);   // 1..16
+        int32_t crush_bits, dec_factor;
+        if (knob_x < 2048) {
+            dec_factor  = 1 + ((knob_x * 15) >> 11);  // 1..16
+            crush_bits  = 0;
+        } else {
+            dec_factor  = 16;
+            crush_bits  = (knob_x - 2048) >> 8;       // 0..7
+        }
 
         // ----------------------------------------------------------------
-        // 4. Freeze: CV In 1 as comparator (>2047 ≈ above 0V)
+        // 4. Freeze: CV In 1 as comparator (> 0 ≈ above 0V)
         // ----------------------------------------------------------------
-        frozen = (CVIn1() > 2047);
+        frozen = (CVIn1() > 0);
 
         // ----------------------------------------------------------------
         // 5. Clock edge — measure beat, compute slice geometry
