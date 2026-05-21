@@ -154,6 +154,38 @@ When not glitching, Audio In 1 passes straight to the outputs, bypassing the buf
 
 ---
 
+## Patch Ideas
+
+### Self-patching
+
+**Self-freezing loop** — Patch CV Out 1 (glitch gate) into CV In 1 (freeze). When glitching starts, the buffer automatically freezes, locking the loop tightly. The glitch feeds itself.
+
+**Subdivided clock from a single source** — Patch one clock into Pulse In 1. Use Pulse Out 1 (sub-slice clock) to drive a sequencer or envelope at the ratchet subdivision rate, and Pulse Out 2 (mirror) to drive something else at the original beat rate. One clock in, two related clocks out.
+
+**Ramp-controlled degradation** — Patch CV Out 2 (descending ramp) into CV In 2. As each slice plays, degradation increases — the repeat starts clean and gets progressively dirtier before resetting at the next boundary.
+
+---
+
+### With other modules
+
+**VCA ducking on repeats** — Patch CV Out 2 into a VCA controlling the glitched output. The repeated slice fades out naturally across its duration, giving each ratchet hit a decaying envelope rather than a hard cut.
+
+**Glitch-triggered envelope** — Patch CV Out 1 (glitch gate) into an envelope generator's gate input. Every time Glitch fires, an envelope opens — useful for adding a filter sweep, reverb send, or amplitude swell that only happens during glitch events.
+
+**Sequencer sync** — Patch Pulse Out 1 into a sequencer clock input. The sequencer advances once per ratchet subdivision, so at ÷4 your sequence runs four times per beat. Change the Main Knob zone to change the sequence speed in musically useful ratios.
+
+**Rhythmic filtering** — Patch CV Out 1 into a filter's CV input. The filter opens fully while glitching and closes during pass-through, creating a rhythmic timbral gate in sync with the beat-repeat events.
+
+**Wet/dry blend** — Take Audio Out 1 (glitched) and Audio Out 2 (dry) into a mixer or crossfader. Blend between them manually, or automate the crossfade with a CV source for gradual glitch introduction and removal.
+
+**External glitch trigger** — Set Switch to MID. Patch a sequencer gate, envelope, or LFO square wave into Pulse In 2. The sequencer now decides exactly which beats glitch, while Glitch handles the ratcheting and degradation.
+
+**Freeze on demand** — Patch an envelope or manual gate into CV In 1. Press/hold to freeze the buffer at the moment you want to capture. Release to resume recording. Combine with Switch DOWN to simultaneously force-glitch and freeze — the buffer locks immediately into a repeating loop.
+
+**Degradation from an envelope** — Patch a slow envelope or LFO into CV In 2 (bipolar mod). As the envelope rises, both degradation amount and probability increase together, sweeping Glitch from clean repeats into full lo-fi destruction and back.
+
+---
+
 ## Notes
 
 - Before the first clock pulse arrives, the module passes audio through without glitching
