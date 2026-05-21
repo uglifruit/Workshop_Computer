@@ -15,7 +15,10 @@
 //   Switch MID          : External gate mode — glitch while Pulse In 2 HIGH
 //   Switch DOWN (moment): Force mode — always glitch
 //   Audio In 1          : Input signal
-//   Audio Out 1 + 2     : Output (same signal on both channels)
+//   Audio Out 1         : Glitched (or pass-through) output
+//   Audio Out 2         : Always dry — live pass-through of Audio In 1
+//   Pulse Out 1         : Sub-slice clock — fires at every ratchet slice boundary
+//   CV Out 1            : Glitch gate — high (+5V) while glitching, low (0V) otherwise
 //
 // LEDs:
 //   LED 0..4   : One lit to show current ratchet zone (left col + top-right)
@@ -90,6 +93,9 @@ class Glitch : public ComputerCard
 
     // --- frozen state ---
     bool     frozen           = false;
+
+    // --- output state ---
+    bool     slice_boundary   = false;  // true for one sample at each slice reset
 
 public:
     Glitch() {
@@ -166,8 +172,9 @@ public:
                           % MAX_BUFFER_SIZE;
 
             // Decide glitch and reverse for the first sub-slice of this beat.
-            slice_pos   = 0;
-            do_glitch   = eval_glitch(prob_thresh, knob_y);
+            slice_pos       = 0;
+            slice_boundary  = true;
+            do_glitch       = eval_glitch(prob_thresh, knob_y);
             reverse_flag = ((rng_next() >> 20) < (uint32_t)prob_thresh);
             degrade_active = eval_degrade(knob_y);
         }
@@ -186,8 +193,9 @@ public:
         if (master_loop_len > 0) {
             slice_pos++;
             if (slice_pos >= slice_len) {
-                slice_pos    = 0;
-                do_glitch    = eval_glitch(prob_thresh, knob_y);
+                slice_pos       = 0;
+                slice_boundary  = true;
+                do_glitch       = eval_glitch(prob_thresh, knob_y);
                 reverse_flag = ((rng_next() >> 20) < (uint32_t)prob_thresh);
                 degrade_active = eval_degrade(knob_y);
             }
@@ -229,10 +237,13 @@ public:
         }
 
         // ----------------------------------------------------------------
-        // 9. Audio output — same signal on both channels
+        // 9. Outputs
         // ----------------------------------------------------------------
         AudioOut1(out);
-        AudioOut2(out);
+        AudioOut2(AudioIn1());                        // always dry
+        PulseOut1(slice_boundary);                    // sub-slice clock, one sample wide
+        slice_boundary = false;
+        CVOut1(do_glitch ? 2047 : -2048);             // glitch gate
 
         // ----------------------------------------------------------------
         // 10. LEDs

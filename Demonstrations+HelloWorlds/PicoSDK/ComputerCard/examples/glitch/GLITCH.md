@@ -6,31 +6,32 @@ A clock-synced beat-repeater and audio degradation effect. Glitch continuously r
 
 ## Inputs
 
-### Audio
+### Audio (top row)
 | Jack | Function |
 |------|----------|
 | Audio In 1 | Main audio input — continuously recorded into the buffer |
 
-### Pulse
+### Pulse (bottom row)
 | Jack | Function |
 |------|----------|
 | Pulse In 1 | **Clock input** — rising edge sets the beat length. Each new pulse measures the time since the last pulse (in samples) to define MasterLoopLength. Maximum buffer is 0.5 seconds; longer beats are capped. |
 | Pulse In 2 | **External gate** — used only when Switch is in MID position. While HIGH, forces glitching on the current slice. |
 
-### CV
+### CV (middle row)
 | Jack | Function |
 |------|----------|
-| CV In 1 | **Freeze** — treated as a comparator. When the voltage is above ~0V, the buffer stops recording. The frozen content loops continuously. Below ~0V, recording resumes. |
-| CV In 2 | **Degradation modulation** — bipolar input added to both Knob X and Knob Y values. Positive voltage increases degradation amount and probability; negative voltage reduces them. |
+| CV In 1 | **Freeze** — treated as a comparator. When the voltage is above ~0V (ADC value > 2047), the buffer stops recording. The frozen content loops continuously. Below ~0V, recording resumes. |
 
 ---
 
-## Outputs
+## Outputs (top row)
 
 | Jack | Function |
 |------|----------|
-| Audio Out 1 | Main output — glitched or pass-through audio |
-| Audio Out 2 | Identical to Audio Out 1 (same signal, both channels driven) |
+| Audio Out 1 | Glitched output — or live pass-through when not glitching |
+| Audio Out 2 | Always dry — live pass-through of Audio In 1 regardless of glitch state |
+| Pulse Out 1 | Sub-slice clock — fires a one-sample pulse at every ratchet slice boundary |
+| CV Out 1 | Glitch gate — high (~+5V) while glitching, low (0V) while passing through |
 
 ---
 
@@ -58,13 +59,13 @@ LED 5 (bottom right) shows the current probability threshold as brightness — u
 
 ### Knob X — Degradation Amount
 
-Controls the depth of lo-fi degradation applied to glitched slices, introduced in two stages across the knob's travel.
+Controls the depth of two simultaneous lo-fi effects applied to glitched slices.
 
-**First half (CCW to centre) — Decimation (sample-rate reduction):** quantises the read position so the same sample plays multiple times before advancing. Creates a stepped, aliased texture. Fully CCW is clean; at centre the signal advances in steps of 16 samples, giving a heavily lo-fi character.
+**Bitcrushing** — reduces the bit depth of the audio. At minimum (fully CCW) the audio is clean. As the knob increases, low bits are progressively masked off: at mid-range you get 8-bit grit; near maximum, extremely coarse quantisation.
 
-**Second half (centre to CW) — Bitcrushing added:** decimation stays at maximum while bitcrushing is progressively introduced, reducing the bit depth of the audio. Low bits are masked off, adding increasing quantisation grit up to extremely coarse distortion at full CW.
+**Decimation (sample-rate reduction)** — quantises the read position so the same sample plays multiple times before advancing. Creates a stepped, aliased texture. At minimum, smooth playback. At maximum, the signal advances in steps of 16 samples, giving a heavily lo-fi character.
 
-Fully CCW is completely clean regardless of Knob Y. CV In 2 offsets this value — positive voltage pushes further into degradation.
+Both effects scale together as Knob X increases. At zero, degradation is completely bypassed regardless of Knob Y.
 
 ---
 
@@ -118,14 +119,18 @@ Only one of LEDs 0–4 is lit at a time, showing your current ratchet selection 
 ## Signal Flow
 
 ```
-Audio In 1 ──► Circular Buffer (0.5s) ──► [if glitching] Slice Playback ──► Audio Out 1+2
-                     ▲                           │
-               CV In 1 (Freeze)          Ratchet / Reverse
-                                         Decimate / Bitcrush
+Audio In 1 ──► Circular Buffer (0.5s) ──► [if glitching] Slice Playback ──► Audio Out 1
+     │               ▲                           │
+     └───────────────────────────────────────────────────────────────────► Audio Out 2 (dry)
+                CV In 1 (Freeze)          Ratchet / Reverse
+                                          Decimate / Bitcrush
 
                Pulse In 1 (Clock) ──► MasterLoopLength
                Pulse In 2 (Gate) ──► [Switch MID only] force glitch
                CV In 2 (bipolar) ──► offsets Knob X + Knob Y
+
+               Slice boundary ──────────────────────────────────────────► Pulse Out 1
+               do_glitch flag ──────────────────────────────────────────► CV Out 1 (gate)
 ```
 
 When not glitching, Audio In 1 passes straight to the outputs, bypassing the buffer entirely.
