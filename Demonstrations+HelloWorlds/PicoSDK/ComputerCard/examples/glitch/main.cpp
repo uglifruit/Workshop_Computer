@@ -19,6 +19,8 @@
 //   Audio Out 2         : Always dry — live pass-through of Audio In 1
 //   Pulse Out 1         : Sub-slice clock — fires at every ratchet slice boundary
 //   CV Out 1            : Glitch gate — high (+5V) while glitching, low (0V) otherwise
+//   CV Out 2            : Descending ramp across each slice (high→low), resets at boundary
+//   Pulse Out 2         : Mirror of Pulse In 1 (clock through)
 //
 // LEDs:
 //   LED 0..4   : One lit to show current ratchet zone (left col + top-right)
@@ -96,6 +98,7 @@ class Glitch : public ComputerCard
 
     // --- output state ---
     bool     slice_boundary   = false;  // true for one sample at each slice reset
+    int32_t  ramp_scale       = 0;      // 2047*65536 / (slice_len-1), 16.16 fixed-point
 
 public:
     Glitch() {
@@ -174,6 +177,7 @@ public:
             // Decide glitch and reverse for the first sub-slice of this beat.
             slice_pos       = 0;
             slice_boundary  = true;
+            ramp_scale      = (slice_len > 1) ? (2047 * 65536) / (slice_len - 1) : 0;
             do_glitch       = eval_glitch(prob_thresh, knob_y);
             reverse_flag = ((rng_next() >> 20) < (uint32_t)prob_thresh);
             degrade_active = eval_degrade(knob_y);
@@ -195,6 +199,7 @@ public:
             if (slice_pos >= slice_len) {
                 slice_pos       = 0;
                 slice_boundary  = true;
+                ramp_scale      = (slice_len > 1) ? (2047 * 65536) / (slice_len - 1) : 0;
                 do_glitch       = eval_glitch(prob_thresh, knob_y);
                 reverse_flag = ((rng_next() >> 20) < (uint32_t)prob_thresh);
                 degrade_active = eval_degrade(knob_y);
@@ -242,8 +247,13 @@ public:
         AudioOut1(out);
         AudioOut2(AudioIn1());                        // always dry
         PulseOut1(slice_boundary);                    // sub-slice clock, one sample wide
+        PulseOut2(PulseIn1());                        // clock mirror
         slice_boundary = false;
         CVOut1(do_glitch ? 2047 : -2048);             // glitch gate
+        const int32_t ramp = (slice_len > 1)
+            ? 2047 - ((slice_pos * ramp_scale) >> 16)
+            : 2047;
+        CVOut2((int16_t)ramp);                        // descending slice ramp
 
         // ----------------------------------------------------------------
         // 10. LEDs

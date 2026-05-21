@@ -32,6 +32,8 @@ A clock-synced beat-repeater and audio degradation effect. Glitch continuously r
 | Audio Out 2 | Always dry — live pass-through of Audio In 1 regardless of glitch state |
 | Pulse Out 1 | Sub-slice clock — fires a one-sample pulse at every ratchet slice boundary |
 | CV Out 1 | Glitch gate — high (~+5V) while glitching, low (0V) while passing through |
+| CV Out 2 | Descending ramp — falls from ~+5V to 0V across each slice, resets at boundary. Patch to a VCA to fade out each repeated slice. |
+| Pulse Out 2 | Clock mirror — passes Pulse In 1 straight through |
 
 ---
 
@@ -131,6 +133,8 @@ Audio In 1 ──► Circular Buffer (0.5s) ──► [if glitching] Slice Playb
 
                Slice boundary ──────────────────────────────────────────► Pulse Out 1
                do_glitch flag ──────────────────────────────────────────► CV Out 1 (gate)
+               Slice position (inverted) ───────────────────────────────► CV Out 2 (ramp)
+               Pulse In 1 ──────────────────────────────────────────────► Pulse Out 2 (mirror)
 ```
 
 When not glitching, Audio In 1 passes straight to the outputs, bypassing the buffer entirely.
