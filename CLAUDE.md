@@ -86,13 +86,20 @@ Output `.uf2` lands in `Demonstrations+HelloWorlds/PicoSDK/ComputerCard/build/`.
 
 ## Existing Firmware in This Repo
 
-### Glitch (`examples/glitch/`) — v1.3
-Clock-synced beat-repeater with ratcheting, reversal, and audio degradation.
+### Glitch (`examples/glitch/`) — v1.4
+Clock-synced beat-repeater (Glitch mode) + breakbeat slicer (Stutter mode). Mode selected by holding switch at reset.
 - Released at: `releases/57_glitch/`
-- GitHub release: `uglifruit/Workshop_Computer/releases/tag/glitch-v1.3.0`
-- PR to Tom's repo: #151 (pending merge as of 2026-05-21)
+- GitHub release: `uglifruit/Workshop_Computer/releases/tag/glitch-v1.4.0`
+- PR to Tom's repo: #159 (open as of 2026-05-27)
 - All 6 inputs and 6 outputs used
-- Integer-only DSP, 48KB circular buffer, ~22% RAM
+- Integer-only DSP, 224KB circular buffer (112,000 samples = 2.33s), ~89.5% RAM
+- ADC settle gotcha: SwitchVal() reads 0 (= Switch::Down) at boot — wait 4800 samples before reading mode
+
+### Smear (`releases/58_smear/`) — v0.1.0 (in development)
+Fixed-point phase vocoder — freeze a spectral snapshot, smear into ambient drone.
+- Self-contained standalone build (own CMakeLists.txt, not in shared examples tree)
+- Dual-core: Core 0 = 48kHz I/O, Core 1 = FFT analysis/synthesis
+- Build from `releases/58_smear/` — requires `-DPICOTOOL_FETCH_FROM_GIT_PATH="/c/Users/andyu/.pico-sdk/picotool/2.2.0-a4"` to avoid picotool source build
 
 ## Workflow Learned
 
