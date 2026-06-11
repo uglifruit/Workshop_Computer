@@ -69,6 +69,10 @@ add_example(passthrough)
 
 add_example(glitch)
 
+add_example(hardsync)
+
+add_example(wavefolder)
+
 add_example(sample_and_hold)
 
 add_example(web_interface)
@@ -89,3 +93,5 @@ add_example(usb_detect)
 add_example(usb_serial)
 target_link_libraries(usb_serial pico_multicore)
 pico_enable_stdio_usb(usb_serial 1)
+
+add_example(spread)

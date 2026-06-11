@@ -95,11 +95,10 @@ Clock-synced beat-repeater (Glitch mode) + breakbeat slicer (Stutter mode). Mode
 - Integer-only DSP, 224KB circular buffer (112,000 samples = 2.33s), ~89.5% RAM
 - ADC settle gotcha: SwitchVal() reads 0 (= Switch::Down) at boot — wait 4800 samples before reading mode
 
-### Smear (`releases/58_smear/`) — v0.1.0 (in development)
-Fixed-point phase vocoder — freeze a spectral snapshot, smear into ambient drone.
-- Self-contained standalone build (own CMakeLists.txt, not in shared examples tree)
-- Dual-core: Core 0 = 48kHz I/O, Core 1 = FFT analysis/synthesis
-- Build from `releases/58_smear/` — requires `-DPICOTOOL_FETCH_FROM_GIT_PATH="/c/Users/andyu/.pico-sdk/picotool/2.2.0-a4"` to avoid picotool source build
+### Renaissance (`examples/spread/`) — v1.0.0
+6-voice harmonic spread oscillator. CV2/Knob Y morphs through stacked intervals (unison → m3 → M3 → 5ths → octaves) with landmark snapping. Knob X = detune (when CV1 patched). Main knob = timbre (sine → triangle → saw).
+- Released at: `releases/73_renaissance/`
+- Integer-only DSP, ~9KB RAM (3.5%)
 
 ## Workflow Learned
 
