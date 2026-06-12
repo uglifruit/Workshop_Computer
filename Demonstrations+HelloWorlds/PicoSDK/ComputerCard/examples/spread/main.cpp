@@ -1,24 +1,29 @@
 /**
  * Spread / Renaissance - Workshop Computer program card
- * 6-voice harmonic spread oscillator. CV2+Knob Y morphs through stacked intervals
- * (unison → minor 3rds → major 3rds → 5ths → octaves) with soft landmark snapping.
- * Main knob morphs sine→triangle→saw. Switch selects detune amount.
+ * 6-voice harmonic oscillator.
  *
  * Controls:
  * - CV In 1:   Root pitch 1V/oct (0V = C4, summed with Knob X)
- * - Knob X:    Transpose ±1 octave (summed with CV1)
- * - CV In 2:   Spread CV (0V=unison, +5V=octave stack, summed with Knob Y)
- * - Knob Y:    Spread amount (summed with CV2)
+ * - Knob X:    Master tune ±12 semitones (continuous, summed with CV1)
+ * - Knob Y:    Interval — root note to second note, 0 (unison) → 12 (octave) semitones
+ * - CV In 2:   Interval CV offset (summed with Knob Y)
  * - Main Knob: Timbre — sine (CCW) → triangle (mid) → saw (CW)
- * - Switch:    Detune — Up=none, Mid=on (step set by tapping Down)
+ * - Switch Up: no action (reserved)
+ * - Switch Mid: sustain current chord voicing
+ * - Tap Switch Down: cycle chord extensions (voices 3–6) for current interval
  *
  * Outputs:
  * - Audio Out 1: 6-voice mix
  * - Audio Out 2: Same voices with slight phase offset (stereo width)
  *
+ * Voice layout:
+ * - Voice 1: always root
+ * - Voice 2: always root + Y interval
+ * - Voices 3–6: chord extensions, cycled by tapping switch Down
+ *
  * LEDs:
- * - LEDs 0-4: Spread landmark indicator
- * - LED 5:    Timbre brightness (Switch Up) / detune step (Switch Mid/Down)
+ * - LEDs 0–4: interval indicator (maps 0–12 semitones across 5 LEDs)
+ * - LED 5:    extension preset index (dim = preset 0, bright = preset 5)
  */
 
 #include "ComputerCard.h"
@@ -35,22 +40,25 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-constexpr int32_t kChangeTolerance  = 64;
-constexpr int32_t kCountsPerOctave  = 341;  // CV counts per octave (empirical)
+constexpr int32_t kCountsPerOctave  = 341;
 constexpr int32_t kNumVoices        = 6;
-constexpr int32_t kNumLandmarks     = 5;
-constexpr int32_t kAmpPerVoice      = 10;   // out of 256; 6 voices * 10/256 * ±32000 >> 2 = ±1875
-constexpr uint32_t kPhaseOffset     = 0x00800000u;  // 1/512 cycle stereo offset
-// Detune ratio magnitudes (Q16.16 offset per voice unit, symmetric across 6 voices).
-// Voice spread = ±2.5 * detuneScale / 65536 in pitch ratio terms.
-// Switch Up = off (0), Switch Mid = on (cycles through steps via Down tap).
-// 1 cent ≈ 655 in this unit (100 cents = 65536 * (2^(1/12)-1) / 12 ≈ 655/unit at mid-range).
-// Steps: 3, 6, 10, 15, 20, 30, 40 cents on outermost voice.
-constexpr int32_t kDetuneSteps[7] = { 393, 786, 1310, 1965, 2620, 3930, 5240 };
-constexpr int32_t kNumDetuneSteps = 7;
+constexpr int32_t kNumIntervals     = 13;   // 0..12 semitones
+constexpr int32_t kNumPresets       = 6;    // extension presets per interval
+constexpr int32_t kAmpPerVoice      = 10;   // out of 256; sum of 6 voices >> 2 stays in ±2047
+// Per-voice phase offsets for Out2 — each voice offset by a different amount
+// so the two outputs have genuinely different phase content. Spread across ~90°.
+// Voice i gets i * 1/24 cycle offset (0, 15, 30, 45, 60, 75 degrees).
+constexpr uint32_t kStereoOffsets[6] = {
+    0x00000000u,  // voice 0:  0°
+    0x0AAAAAA0u,  // voice 1: 15°
+    0x15555540u,  // voice 2: 30°
+    0x20000000u,  // voice 3: 45°
+    0x2AAAAAA0u,  // voice 4: 60°
+    0x35555540u,  // voice 5: 75°
+};
 
 // ---------------------------------------------------------------------------
-// Lookup tables (from releases/18_chord_organ/lookup_tables.h)
+// Lookup tables
 // ---------------------------------------------------------------------------
 
 constexpr int32_t SINE_TABLE[512] = {
@@ -140,17 +148,157 @@ constexpr uint32_t MIDI_PHASE_INC[128] = {
 };
 
 // ---------------------------------------------------------------------------
-// Spread landmark table
-// [landmark][voice] = semitone offset above root.
-// Entry [5] is a sentinel duplicate of [4] to allow safe interpolation at max.
+// Chord extension table
+// kExtensions[interval][preset][voice_ext_index] — semitone offsets above root
+// for voices 2–5 (indices 0..3 here). Voice 0 = root (0), Voice 1 = root+interval.
+// Presets cycle through harmonic options for each two-note interval.
 // ---------------------------------------------------------------------------
-constexpr int8_t kLandmarkOffsets[6][6] = {
-    {  0,  0,  0,  0,  0,  0 },  // 0: unison
-    {  0,  3,  6,  9, 12, 15 },  // 1: minor 3rd stack
-    {  0,  4,  8, 12, 16, 20 },  // 2: major 3rd stack
-    {  0,  7, 12, 19, 24, 31 },  // 3: perfect 5th stack
-    {  0, 12, 24, 36, 48, 60 },  // 4: octave stack
-    {  0, 12, 24, 36, 48, 60 },  // 5: sentinel
+
+// interval 0: unison — build upward with 5ths and octaves
+constexpr int8_t kExt_0[6][4] = {
+    {  7, 12, 19, 24 },  // root + 5th + oct + 5th+oct
+    { 12, 19, 24, 31 },  // octave stack
+    {  7, 12, 24, 31 },  // open 5ths
+    {  7, 19, 24, 36 },  // spread 5ths
+    { 12, 24, 36, 48 },  // octave stack wide
+    {  5,  7, 12, 17 },  // sus cluster
+};
+
+// interval 1: minor 2nd — dissonant, use spread to open it up
+constexpr int8_t kExt_1[6][4] = {
+    { 12, 13, 24, 25 },  // octave doubling of the cluster
+    {  7, 12, 19, 24 },  // add 5ths — opens it up
+    { 12, 19, 24, 25 },  // 5th + oct + top crunch
+    {  7, 13, 19, 24 },  // 5th framing the m2
+    { 12, 24, 25, 36 },  // wide with top crunch
+    {  1,  7, 12, 13 },  // cluster below and above
+};
+
+// interval 2: major 2nd — sus2 family
+constexpr int8_t kExt_2[6][4] = {
+    {  7, 12, 14, 19 },  // sus2 with 5th
+    {  7, 14, 19, 24 },  // open sus2
+    {  2,  7, 12, 14 },  // add below
+    { 14, 19, 21, 26 },  // 9th chord upper structure
+    {  7, 12, 21, 26 },  // 9th with 5th
+    {  2, 14, 19, 26 },  // stacked 9ths
+};
+
+// interval 3: minor 3rd — minor chords
+constexpr int8_t kExt_3[6][4] = {
+    {  7, 12, 19, 24 },  // minor triad + oct
+    {  7, 10, 12, 19 },  // min7
+    {  7, 12, 15, 19 },  // min add11 / quartal
+    {  3,  7, 10, 12 },  // min7 close
+    {  7, 12, 19, 22 },  // min7 open
+    {  7, 15, 19, 24 },  // min11
+};
+
+// interval 4: major 3rd — major chords
+constexpr int8_t kExt_4[6][4] = {
+    {  7, 12, 16, 19 },  // major triad + oct
+    {  7, 11, 12, 16 },  // maj7
+    {  4,  7, 12, 16 },  // major triad doubling
+    {  7, 11, 16, 19 },  // maj7 open
+    {  4, 12, 16, 19 },  // add9
+    {  7, 14, 16, 19 },  // maj9
+};
+
+// interval 5: perfect 4th — sus4 / quartal
+constexpr int8_t kExt_5[6][4] = {
+    {  7, 12, 17, 19 },  // sus4 with 5th
+    {  5,  7, 12, 17 },  // quartal
+    {  7, 12, 17, 24 },  // sus4 open
+    {  5, 12, 17, 22 },  // quartal stack
+    {  7, 17, 19, 24 },  // sus4 spread
+    {  5,  7, 17, 24 },  // wide quartal
+};
+
+// interval 6: tritone — augmented / diminished
+constexpr int8_t kExt_6[6][4] = {
+    {  3,  6,  9, 12 },  // diminished 7th
+    {  6,  9, 12, 15 },  // dim7 inversion
+    {  6, 12, 18, 24 },  // tritone stack
+    {  4,  6, 10, 12 },  // dom7b5
+    {  6, 12, 15, 18 },  // dim + oct
+    {  3,  6, 12, 15 },  // half-dim
+};
+
+// interval 7: perfect 5th — power / major / modal
+constexpr int8_t kExt_7[6][4] = {
+    { 12, 19, 24, 31 },  // power chord wide
+    {  4,  7, 12, 16 },  // major triad
+    {  7, 11, 12, 19 },  // dom7
+    {  7, 12, 14, 19 },  // add9
+    {  4,  7, 16, 19 },  // major spread
+    {  3,  7, 10, 12 },  // min7 on root
+};
+
+// interval 8: minor 6th — minor inversions / augmented
+constexpr int8_t kExt_8[6][4] = {
+    {  3,  7, 12, 15 },  // minor + 5th
+    {  4,  8, 12, 15 },  // augmented
+    {  8, 12, 15, 20 },  // aug inversion
+    {  7, 12, 15, 19 },  // min add11
+    {  3,  8, 15, 20 },  // aug / dim spread
+    {  8, 15, 19, 24 },  // wide aug
+};
+
+// interval 9: major 6th — 6th chords / major
+constexpr int8_t kExt_9[6][4] = {
+    {  4,  7, 12, 16 },  // major triad
+    {  4,  7,  9, 16 },  // maj6
+    {  7,  9, 12, 16 },  // maj6 open
+    {  4,  9, 16, 21 },  // 6/9
+    {  7, 12, 16, 21 },  // maj6 wide
+    {  2,  4,  9, 16 },  // add9/6
+};
+
+// interval 10: minor 7th — dominant 7th / blues
+constexpr int8_t kExt_10[6][4] = {
+    {  4,  7, 12, 16 },  // dom7 (major triad + min7)
+    {  4,  7, 10, 14 },  // dom9
+    {  2,  4,  7, 10 },  // dom9 close
+    {  7, 10, 12, 19 },  // dom7 open
+    {  4, 10, 12, 16 },  // dom7 alt
+    {  6,  7, 10, 13 },  // dom7b5b9 — altered
+};
+
+// interval 11: major 7th — maj7 / lydian
+constexpr int8_t kExt_11[6][4] = {
+    {  4,  7, 12, 16 },  // maj7 (add 5th + 3rd)
+    {  4,  7, 11, 16 },  // maj7 close
+    {  7, 11, 12, 16 },  // maj7 open
+    {  2,  4,  7, 11 },  // maj9
+    {  4, 11, 16, 18 },  // maj7#11 (lydian)
+    {  6, 11, 16, 18 },  // lydian spread
+};
+
+// interval 12: octave — octave stacks / power
+constexpr int8_t kExt_12[6][4] = {
+    {  7, 12, 19, 24 },  // add 5ths
+    { 12, 19, 24, 31 },  // octave + 5th stack
+    {  7, 19, 24, 36 },  // wide open 5ths
+    { 12, 24, 31, 36 },  // oct stack with 5th
+    {  4,  7, 12, 16 },  // major triad
+    {  5,  7, 12, 17 },  // sus/quartal
+};
+
+// Pointer table — index by interval
+constexpr const int8_t* kExtensions[13] = {
+    &kExt_0[0][0],
+    &kExt_1[0][0],
+    &kExt_2[0][0],
+    &kExt_3[0][0],
+    &kExt_4[0][0],
+    &kExt_5[0][0],
+    &kExt_6[0][0],
+    &kExt_7[0][0],
+    &kExt_8[0][0],
+    &kExt_9[0][0],
+    &kExt_10[0][0],
+    &kExt_11[0][0],
+    &kExt_12[0][0],
 };
 
 // ---------------------------------------------------------------------------
@@ -170,18 +318,16 @@ private:
     // Oscillator state
     uint32_t phase[kNumVoices]          = {};
     uint32_t phaseIncBase[kNumVoices]   = {};
-    uint32_t phaseIncDetune[kNumVoices] = {};
 
-    // Quantized control state
-    int32_t  rootQuant   = 60;
-    int32_t  spreadZone  = 0;    // 0..4
-    int32_t  spreadFrac  = 0;    // 0..1023
-    int32_t  detuneScale = 0;    // Q16.16 offset magnitude per voice unit
-
-    // Smoothed raw values (for change detection)
-    int32_t  prevCvRoot    = 60;  // CV1-derived root only (so knobX doesn't mask CV1 changes)
-    int32_t  prevKnobXSemi = 0;
-    int32_t  prevDetune    = 0;
+    // Control state
+    // Chord shape: all voices computed relative to MIDI 60, stored in phaseIncBase[].
+    // Tuning: a single Q16.16 ratio (X+CV1) multiplied onto every phaseIncBase[] uniformly.
+    uint32_t tuningRatio     = 65536;  // Q16.16, 1.0 = MIDI 60
+    uint32_t prevTuningRatio = 65536;
+    int32_t  intervalSemi    = 0;    // integer semitone 0..12, Y knob
+    int32_t  prevIntervalSemi = 0;
+    int32_t  preset          = 0;    // 0..5, which extension voicing
+    int32_t  prevPreset      = -1;   // force initial compute
 
     // Control smoothing accumulators
     int32_t  knobXSmoothed    = 2048;
@@ -190,11 +336,12 @@ private:
     int32_t  cv2Smoothed      = 0;
     int32_t  mainKnobSmoothed = 2048;
 
-    // Switch / detune state
-    int32_t  detuneStep   = 0;    // 0..6, index into kDetuneSteps
-    bool     downArmed    = true; // false while Down held, resets on release
+    // Switch state
+    bool     downArmed    = true;
 
-    // Helpers
+    // Pulse Out 2 PWM LFO
+    uint32_t pwmPhase     = 0;
+
     void updateTargets();
     static inline uint32_t phaseIncFrac(int note_lo, int note_hi, int32_t frac);
     static inline int32_t __not_in_flash_func(sineSample)(uint32_t ph);
@@ -216,34 +363,45 @@ inline int32_t SpreadCard::sineSample(uint32_t ph) {
 }
 
 inline int32_t SpreadCard::triSample(uint32_t ph) {
-    // Triangle: ±32767, zero-crossing at 0 and 0x80000000
     if (ph < 0x40000000u)
-        return (int32_t)(ph >> 15);          // 0 → +32767
+        return (int32_t)(ph >> 15);
     else if (ph < 0xC0000000u)
-        return 32767 - (int32_t)((ph - 0x40000000u) >> 14);  // +32767 → -32767
+        return 32767 - (int32_t)((ph - 0x40000000u) >> 14);
     else
-        return (int32_t)(ph >> 15) - 131072; // -32767 → 0
+        return (int32_t)(ph >> 15) - 131072;
 }
 
 inline int32_t SpreadCard::sawSample(uint32_t ph) {
-    // Saw: ±~31250
     return ((int32_t)(ph >> 16) - 32768) * 1000 >> 10;
 }
 
 inline int32_t SpreadCard::blendWaveform(uint32_t ph, int32_t shape) {
-    // shape 0..4095: 0..1365 = sine→tri, 1366..2730 = tri→saw, 2731..4095 = full saw
-    if (shape < 1366) {
-        const int32_t t = (shape * 3) >> 2;   // 0..1023
+    // shape 0..4095, centre (2048) = pure sine.
+    // CCW (0→2048): SAW → TRI → SINE. Sine/tri blend kept narrow (256 counts) to avoid grittiness.
+    // CW  (2048→4095): SINE → TRI → SAW. Same narrow sine/tri blend zone.
+    //
+    // Zones CCW:  0..1535 = SAW→TRI (1536 wide), 1536..2047 = TRI→SINE (512 wide)
+    // Zones CW:   2048..2559 = SINE→TRI (512 wide), 2560..4095 = TRI→SAW (1536 wide)
+    if (shape < 1536) {
+        const int32_t t = (shape * 683) >> 10;     // 0..1023 over 1536 counts
+        const int32_t s = sawSample(ph);
+        const int32_t r = triSample(ph);
+        return s + ((r - s) * t >> 10);
+    } else if (shape < 2048) {
+        const int32_t t = (shape - 1536) * 2;      // 0..1023 over 512 counts
+        const int32_t s = triSample(ph);
+        const int32_t r = sineSample(ph);
+        return s + ((r - s) * t >> 10);
+    } else if (shape < 2560) {
+        const int32_t t = (shape - 2048) * 2;      // 0..1023 over 512 counts
         const int32_t s = sineSample(ph);
         const int32_t r = triSample(ph);
         return s + ((r - s) * t >> 10);
-    } else if (shape < 2731) {
-        const int32_t t = ((shape - 1366) * 3) >> 2;  // 0..1023
+    } else {
+        const int32_t t = ((shape - 2560) * 683) >> 10;  // 0..1023 over 1536 counts
         const int32_t s = triSample(ph);
         const int32_t r = sawSample(ph);
         return s + ((r - s) * t >> 10);
-    } else {
-        return sawSample(ph);
     }
 }
 
@@ -258,33 +416,32 @@ inline uint32_t SpreadCard::phaseIncFrac(int note_lo, int note_hi, int32_t frac)
     if (note_hi > 127) note_hi = 127;
     int32_t lo = (int32_t)MIDI_PHASE_INC[note_lo];
     int32_t hi = (int32_t)MIDI_PHASE_INC[note_hi];
-    // frac 0..1023 (Q10)
     return (uint32_t)(lo + ((hi - lo) * frac >> 10));
 }
 
 // ---------------------------------------------------------------------------
-// updateTargets — recompute phase increments from current quantized state.
-// Called only on control change, not in the hot path.
+// updateTargets
 // ---------------------------------------------------------------------------
 
 void SpreadCard::updateTargets() {
-    for (int i = 0; i < kNumVoices; i++) {
-        int32_t off_lo = kLandmarkOffsets[spreadZone][i];
-        int32_t off_hi = kLandmarkOffsets[spreadZone + 1][i];
-        // offsetQ10 = fractional semitone offset above root (Q10, i.e. *1024)
-        int32_t offsetQ10 = off_lo * 1024 + (off_hi - off_lo) * spreadFrac;
-        int note_lo = rootQuant + (offsetQ10 >> 10);
-        int note_hi = note_lo + 1;
-        int32_t noteFrac = offsetQ10 & 0x3FF;
-        phaseIncBase[i] = phaseIncFrac(note_lo, note_hi, noteFrac);
+    // Step 1: compute chord shape relative to MIDI 60 (no tuning applied yet).
+    // Voice 0: root = note 60
+    phaseIncBase[0] = MIDI_PHASE_INC[60];
+
+    // Voice 1: note 60 + intervalSemi (discrete semitone step from Y knob)
+    phaseIncBase[1] = MIDI_PHASE_INC[60 + intervalSemi];
+
+    // Voices 2–5: integer semitone offsets from extension table above note 60
+    const int8_t* ext = kExtensions[intervalSemi] + preset * 4;
+    for (int i = 0; i < 4; i++) {
+        int32_t n = 60 + (int32_t)ext[i];
+        phaseIncBase[2 + i] = phaseIncFrac(n, n + 1, 0);
     }
 
-    // Apply symmetric detune ratios (Q16.16). Voices spread: -5/2, -3/2, -1/2, +1/2, +3/2, +5/2 * detuneScale
+    // Step 2: apply tuning ratio uniformly to all voices.
+    // tuningRatio is Q16.16 — 65536 = no shift from MIDI 60.
     for (int i = 0; i < kNumVoices; i++) {
-        // (2*i - 5) gives -5, -3, -1, +1, +3, +5
-        int32_t ratioOffset = ((2 * i - 5) * detuneScale) >> 1;
-        int32_t ratio = 65536 + ratioOffset;  // Q16.16
-        phaseIncDetune[i] = (uint32_t)((int64_t)phaseIncBase[i] * ratio >> 16);
+        phaseIncBase[i] = (uint32_t)((uint64_t)phaseIncBase[i] * tuningRatio >> 16);
     }
 }
 
@@ -297,79 +454,90 @@ void SpreadCard::ProcessSample() {
     int32_t mainKnob = KnobVal(Knob::Main);
     int32_t knobX    = KnobVal(Knob::X);
     int32_t knobY    = KnobVal(Knob::Y);
-    int32_t cv1      = CVIn1();   // -2048..2047, 0V=0, 1V/oct=341 counts/oct
-    int32_t cv2      = CVIn2();   // -2048..2047, 0V=0
+    int32_t cv1      = CVIn1();
+    int32_t cv2      = CVIn2();
 
-    // 2. Smooth controls (IIR, ~30 sample time constant)
+    // 2. Smooth controls
     mainKnobSmoothed += (mainKnob - mainKnobSmoothed) >> 5;
     knobXSmoothed    += (knobX    - knobXSmoothed)    >> 5;
     knobYSmoothed    += (knobY    - knobYSmoothed)    >> 5;
     cv1Smoothed      += (cv1      - cv1Smoothed)      >> 5;
     cv2Smoothed      += (cv2      - cv2Smoothed)      >> 5;
 
-    // 3. Root pitch.
-    // CV1: 1V/oct, 0V=MIDI 60. 341 counts/octave, quantised to nearest semitone.
-    int32_t cv1Semi = cv1Smoothed * 12;
-    int32_t cvRoot  = 60 + (cv1Semi + (cv1Semi >= 0 ? kCountsPerOctave/2 : -kCountsPerOctave/2))
-                            / kCountsPerOctave;
-    // Knob X: bipolar ±1 octave (±12 semitones). Centre=no offset.
-    // (knobX - 2048) ranges -2048..2047; * 12 / 2048 gives -12..+11.
-    int32_t knobXSemi = ((knobXSmoothed - 2048) * 12) >> 11;
-    int32_t newRoot   = cvRoot + knobXSemi;
-    if (newRoot < 0)   newRoot = 0;
-    if (newRoot > 127) newRoot = 127;
+    // CV2 offsets timbre (main knob) bipolarly. CV2 range -2048..2047 maps to ±2048 on 0..4095 scale.
+    int32_t timbre = mainKnobSmoothed + cv2Smoothed;
+    if (timbre < 0)    timbre = 0;
+    if (timbre > 4095) timbre = 4095;
 
-    // 4. Spread: Knob Y selects one of 5 landmarks directly.
-    // CV2 offsets the knob bipolarly. Combined value → 0..4095 → quantised to 0..4.
-    int32_t spreadRaw = knobYSmoothed + cv2Smoothed;
-    if (spreadRaw < 0)    spreadRaw = 0;
-    if (spreadRaw > 4095) spreadRaw = 4095;
-    // 5 equal zones of 819 counts each → landmark 0..4
-    int32_t newSpreadZone = spreadRaw * 5 / 4096;
-    if (newSpreadZone > 4) newSpreadZone = 4;
+    // 3. Tuning: CV1 + KnobX as Q10 semitone offset from MIDI 60.
+    // Converted to a Q16.16 ratio in updateTargets() and applied to all voices uniformly.
+    int32_t tuneQ10 = (cv1Smoothed * 12288) / kCountsPerOctave  // CV1 offset from 60
+                    + (knobXSmoothed - 2048) * 6;               // KnobX ±12 semitones
+    // Clamp to ±60 semitones (±5 octaves)
+    if (tuneQ10 < -60 * 1024) tuneQ10 = -60 * 1024;
+    if (tuneQ10 >  60 * 1024) tuneQ10 =  60 * 1024;
+    // Convert to Q16.16 ratio via MIDI LUT: ratio = phaseInc(60+offset) / phaseInc(60)
+    int32_t  tuneNote = 60 + (tuneQ10 >> 10);
+    int32_t  tuneFrac = tuneQ10 & 0x3FF;
+    if (tuneQ10 < 0) { tuneNote = 60 + (tuneQ10 >> 10) - 1; tuneFrac = (1024 + (tuneQ10 & 0x3FF)) & 0x3FF; }
+    uint32_t rootInc  = phaseIncFrac(tuneNote, tuneNote + 1, tuneFrac);
+    uint32_t newTuningRatio = (uint32_t)(((uint64_t)rootInc << 16) / MIDI_PHASE_INC[60]);
 
-    // 5. Switch: Up = detune off. Mid = detune on (at current step).
-    //    Tapping Down advances detuneStep (debounced, armed on release).
+    // 4. Interval: Knob Y only (CV2 now drives timbre).
+    int32_t intervalRaw = knobYSmoothed;
+    if (intervalRaw < 0)    intervalRaw = 0;
+    if (intervalRaw > 4095) intervalRaw = 4095;
+    int32_t newIntervalSemi = (intervalRaw * 13) >> 12;  // 0..12
+    if (newIntervalSemi > 12) newIntervalSemi = 12;
+
+    // 5. Switch: tap Down to advance preset.
     Switch sw = SwitchVal();
     if (sw == Switch::Down && downArmed) {
-        detuneStep = (detuneStep + 1) % kNumDetuneSteps;
-        downArmed  = false;
+        preset    = (preset + 1) % kNumPresets;
+        downArmed = false;
     }
     if (sw != Switch::Down) downArmed = true;
 
-    int32_t newDetuneScale = (sw == Switch::Up) ? 0 : kDetuneSteps[detuneStep];
-
     // 6. Update targets if anything changed
     bool changed = false;
-    if (abs(cvRoot - prevCvRoot) > kChangeTolerance || knobXSemi != prevKnobXSemi) {
-        rootQuant    = newRoot;
-        prevCvRoot   = cvRoot;
-        prevKnobXSemi = knobXSemi;
-        changed      = true;
+    if (newTuningRatio != prevTuningRatio) {
+        tuningRatio     = newTuningRatio;
+        prevTuningRatio = newTuningRatio;
+        changed         = true;
     }
-    if (newSpreadZone != spreadZone) {
-        spreadZone = newSpreadZone;
-        spreadFrac = 0;
+    if (newIntervalSemi != prevIntervalSemi) {
+        intervalSemi     = newIntervalSemi;
+        prevIntervalSemi = newIntervalSemi;
+        changed          = true;
+    }
+    if (preset != prevPreset) {
+        prevPreset = preset;
         changed    = true;
     }
-    if (newDetuneScale != prevDetune) {
-        detuneScale = newDetuneScale;
-        prevDetune  = newDetuneScale;
-        changed     = true;
-    }
-    if (changed) {
-        updateTargets();
+    if (changed) updateTargets();
+
+    // 5b. Pulse In 1 rising edge → advance preset (same as tapping switch Down)
+    if (PulseIn1RisingEdge()) {
+        preset = (preset + 1) % kNumPresets;
     }
 
-    // 8. Oscillator loop — 6 voices
-    int32_t mix1 = 0;
-    int32_t mix2 = 0;
+    // 7. Oscillator loop — 6 voices
+    // Detune: symmetric fan across voices. 1 cent ≈ amt 15 (= 38/65536 * 2.5 voices).
+    // Switch Mid + CCW=0c, Mid + CW=5c, Up + CCW=10c, Up + CW=16c.
+    bool knobCW = (mainKnobSmoothed >= 2048);
+    int32_t detuneAmt;
+    if (sw == Switch::Up) {
+        detuneAmt = knobCW ? 243 : 152;  // Up+CW=16c, Up+CCW=10c
+    } else {
+        detuneAmt = knobCW ? 76 : 0;     // Mid+CW=5c, Mid+CCW=0c
+    }
+    int32_t mix1 = 0, mix2 = 0;
     for (int i = 0; i < kNumVoices; i++) {
-        phase[i] += phaseIncDetune[i];
-        int32_t s1 = blendWaveform(phase[i],                mainKnobSmoothed);
-        int32_t s2 = blendWaveform(phase[i] + kPhaseOffset, mainKnobSmoothed);
-        mix1 += (s1 * kAmpPerVoice) >> 8;
-        mix2 += (s2 * kAmpPerVoice) >> 8;
+        int32_t detune = ((2 * i - 5) * detuneAmt) >> 1;
+        uint32_t inc = (uint32_t)((int64_t)phaseIncBase[i] + ((int64_t)phaseIncBase[i] * detune >> 16));
+        phase[i] += inc;
+        mix1 += (blendWaveform(phase[i],                      timbre) * kAmpPerVoice) >> 8;
+        mix2 += (blendWaveform(phase[i] + kStereoOffsets[i],  timbre) * kAmpPerVoice) >> 8;
     }
 
     mix1 >>= 2;
@@ -382,17 +550,26 @@ void SpreadCard::ProcessSample() {
     AudioOut1((int16_t)mix1);
     AudioOut2((int16_t)mix2);
 
+    // 8. Pulse outputs
+    // Pulse Out 1: sub-octave square — bit 30 of voice 0 phase (one octave below root)
+    PulseOut1(phase[0] & 0x40000000u);
+
+    // Pulse Out 2: PWM square, same sub-octave frequency, duty cycle swept by LFO.
+    pwmPhase += (uint32_t)(detuneAmt * 900);
+    uint32_t pwmTop  = pwmPhase >> 17;
+    int32_t  pwmTri  = (pwmTop < 16384)
+                     ? (int32_t)pwmTop
+                     : (int32_t)(32767 - (pwmTop - 16384));
+    uint32_t duty = 0x4CCCCCCC + (uint32_t)(pwmTri * 0x199A);
+    PulseOut2((phase[0] >> 1) < duty);
+
     // 9. LEDs
-    // LEDs 0–4: current landmark (one LED per zone)
-    for (int z = 0; z < 5; z++) {
-        LedOn(z, spreadZone == z);
-    }
-    // LED 5: timbre brightness when detune off; detune step when on
-    if (sw == Switch::Up) {
-        LedBrightness(5, mainKnobSmoothed);
-    } else {
-        LedBrightness(5, (detuneStep * 4095) / (kNumDetuneSteps - 1));
-    }
+    // LEDs 0–4: interval position (0..12 semitones across 5 LEDs)
+    int32_t ledPos = (intervalSemi * 4 + 6) / 12;
+    if (ledPos > 4) ledPos = 4;
+    for (int z = 0; z < 5; z++) LedOn(z, ledPos == z);
+    // LED 5: preset brightness
+    LedBrightness(5, (preset * 4095) / (kNumPresets - 1));
 }
 
 // ---------------------------------------------------------------------------
