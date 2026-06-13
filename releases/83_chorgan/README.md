@@ -27,8 +27,8 @@ Six oscillator voices tuned to a chord you shape in real time. Knob Y sets the i
 | Audio Out 2 | Same 6 voices with per-voice phase offsets — stereo width |
 | Pulse Out 1 | Square wave one octave below root voice |
 | Pulse Out 2 | PWM square at the same frequency — duty cycle sweeps 30–70% at a rate set by detune amount |
-| CV Out 1 | Voiced interval — 0..12 semitones mapped to 0V..+1V (1V/oct); follows chord override |
-| CV Out 2 | Detune-rate LFO triangle wave — same rate as Pulse Out 2 PWM, ±5V |
+| CV Out 1 | Voiced interval voltage — 0V at unison, +1V at one octave (1V/oct); tracks chord override |
+| CV Out 2 | Triangle LFO at the same rate as Pulse Out 2 — ±5V, 0V when detune is off |
 
 ## Controls
 
@@ -160,11 +160,11 @@ Each of the 13 Y positions (0–12 semitones) has 6 extension presets. A few exa
 - Detune zone (0/6/12/18 cents) determined by physical main knob position; CV In 2 cannot cross zone boundaries
 - Stereo width via per-voice phase offsets on Out 2 (0°, 15°, 30°, 45°, 60°, 75°)
 - Pulse Out 2 PWM: LFO rate proportional to detune amount — at 0 cents detune, duty is static at 50%
+- CV Out 1: intervalSemi × 34 counts/semitone; CVOut ±2047 = ±5V so 1 semitone = ~34 counts, 12 semitones = +1V exactly — always the voiced interval, not the raw knob position
+- CV Out 2: symmetric triangle LFO sharing the same phase accumulator as Pulse Out 2 — 0V when detuneAmt = 0, ±5V peak at maximum detune; both outputs always track each other's rate
 - Chord sequencer stores tuning ratio, interval, and preset — up to 8 chords
 - PulseIn2 arm guard: must be seen low before first rising edge is accepted (prevents boot glitch)
 - 200ms startup holdoff before audio begins — eliminates power-on glitch
-- CV Out 1: interval in semitones × 34 counts/semitone (409 counts = 1V in the ±5V CVOut range), giving 0V at unison and +1V at one octave (1V/oct); always reflects the voiced interval including chord override
-- CV Out 2: the Pulse Out 2 LFO triangle (0–16383) centred and divided by 4 → ±2047 counts ≈ ±5V; zero when detuneAmt = 0
 - RAM usage: ~10.7KB (4.2% of 256KB)
 
 Full source: https://github.com/uglifruit/Workshop_Computer/tree/main/Demonstrations%2BHelloWorlds/PicoSDK/ComputerCard/examples/chorgan
