@@ -343,6 +343,10 @@ private:
     // Tuning cache — skip 64-bit division when knob/CV unchanged
     int32_t  prevTuneQ10      = INT32_MIN;
 
+    // Startup holdoff — knob IIR in ComputerCard starts at 0 and takes ~2000 samples
+    // to settle to the real knob position. Skip control updates until then.
+    uint32_t startupCount = 0;
+
     // Switch state
     bool     downArmed    = true;
 
@@ -480,6 +484,20 @@ void ChorganCard::ProcessSample() {
     int32_t knobY    = KnobVal(Knob::Y);
     int32_t cv1      = CVIn1();
     int32_t cv2      = CVIn2();
+
+    // Startup holdoff: ComputerCard's knob IIR initialises at 0 and takes ~2000 samples
+    // to converge. During that window, slam our smoothers to the raw knob values so we
+    // start at the correct position instead of jumping from 0.
+    if (startupCount < 2000) {
+        startupCount++;
+        mainKnobSmoothed = mainKnob;
+        knobXSmoothed    = knobX;
+        knobYSmoothed    = knobY;
+        cv1Smoothed      = cv1;
+        cv2Smoothed      = cv2;
+        prevTuneQ10      = INT32_MIN;  // force recompute after holdoff
+        return;
+    }
 
     // 2. Smooth controls
     mainKnobSmoothed += (mainKnob - mainKnobSmoothed) >> 5;
