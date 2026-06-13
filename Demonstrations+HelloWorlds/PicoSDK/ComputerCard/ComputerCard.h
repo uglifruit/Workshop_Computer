@@ -339,6 +339,11 @@ protected:
 	
 	void Abort();
 
+	/// Request a clean ADC + DMA restart (stop, flush FIFO, re-sync round-robin, restart).
+	/// Safe to call from ProcessSample(). The restart happens asynchronously in AudioWorker()
+	/// between ISR calls. Use to recover from ADC channel mis-alignment (knobs wrong parameter).
+	void __not_in_flash_func(RequestADCRestart)() { runADCMode = 3; } // 3 = RUN_ADC_MODE_REQUEST_ADC_RESTART
+
 	uint16_t CRCencode(const uint8_t *data, int length);
 
 private:
