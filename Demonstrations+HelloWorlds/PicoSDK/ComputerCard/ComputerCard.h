@@ -625,9 +625,11 @@ void __not_in_flash_func(ComputerCard::AudioWorker)()
 			adc_select_input(0);
 			adc_set_round_robin(0b0001111U);
 
-			// Reset both channel write addresses and restart from channel A
-			dma_channel_set_write_addr(adc_dma,   ADC_Buffer[0], false);
-			dma_channel_set_write_addr(adc_dma_b, ADC_Buffer[1], false);
+			// Reset both channels' write address and transfer count, then restart from A
+			dma_hw->ch[adc_dma].write_addr       = (uint32_t)ADC_Buffer[0];
+			dma_hw->ch[adc_dma].transfer_count   = 8;
+			dma_hw->ch[adc_dma_b].write_addr     = (uint32_t)ADC_Buffer[1];
+			dma_hw->ch[adc_dma_b].transfer_count = 8;
 			dmaPhase = 0;
 			dma_channel_start(adc_dma);
 			adc_run(true);
@@ -684,13 +686,17 @@ void __not_in_flash_func(ComputerCard::BufferFull)()
 	// Clear IRQ flags for both chained channels (either may have fired)
 	dma_hw->ints0 = (1u << adc_dma) | (1u << adc_dma_b);
 
-	// Re-arm the write address for the channel that just finished so it's ready
-	// when the chain returns to it (~8 ADC conversions / ~21µs from now).
-	// Do NOT start it — the chain will trigger it automatically.
-	if (cpuPhase == 0)
-		dma_channel_set_write_addr(adc_dma,   ADC_Buffer[0], false);
-	else
-		dma_channel_set_write_addr(adc_dma_b, ADC_Buffer[1], false);
+	// Re-arm the channel that just finished: reset its write address AND transfer count
+	// so it's ready when the chain triggers it again (~8 ADC conversions / ~21µs from now).
+	// Must write both — dma_channel_set_write_addr only resets the address, not the count,
+	// so the channel would complete instantly with 0 transfers on its next activation.
+	if (cpuPhase == 0) {
+		dma_hw->ch[adc_dma].write_addr      = (uint32_t)ADC_Buffer[0];
+		dma_hw->ch[adc_dma].transfer_count  = 8;
+	} else {
+		dma_hw->ch[adc_dma_b].write_addr     = (uint32_t)ADC_Buffer[1];
+		dma_hw->ch[adc_dma_b].transfer_count = 8;
+	}
 
 	// Kick off the SPI DAC output (reads from dmaPhase = the buffer being written next,
 	// matching original one-sample pipeline behaviour)
