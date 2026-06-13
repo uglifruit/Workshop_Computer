@@ -339,11 +339,6 @@ protected:
 	
 	void Abort();
 
-	/// Request a clean ADC + DMA restart (stop, flush FIFO, re-sync round-robin, restart).
-	/// Safe to call from ProcessSample(). The restart happens asynchronously in AudioWorker()
-	/// between ISR calls. Use to recover from ADC channel mis-alignment (knobs wrong parameter).
-	void __not_in_flash_func(RequestADCRestart)() { runADCMode = 3; } // 3 = RUN_ADC_MODE_REQUEST_ADC_RESTART
-
 	uint16_t CRCencode(const uint8_t *data, int length);
 
 private:
@@ -558,11 +553,11 @@ void __not_in_flash_func(ComputerCard::AudioWorker)()
 	channel_config_set_read_increment(&adc_dmacfg, false);
 	channel_config_set_write_increment(&adc_dmacfg, true);
 
-	// Synchronise ADC DMA to the ADC samples
+	// Synchronise ADC DMA the ADC samples
 	channel_config_set_dreq(&adc_dmacfg, DREQ_ADC);
 
-	// Setup DMA for 8 ADC samples — don't start yet, BufferFull arms it each cycle
-	dma_channel_configure(adc_dma, &adc_dmacfg, ADC_Buffer[dmaPhase], &adc_hw->fifo, 8, false);
+	// Setup DMA for 8 ADC samples
+	dma_channel_configure(adc_dma, &adc_dmacfg, ADC_Buffer[dmaPhase], &adc_hw->fifo, 8, true);
 
 	// Turn on IRQ for ADC DMA
 	dma_channel_set_irq0_enabled(adc_dma, true);
@@ -576,12 +571,12 @@ void __not_in_flash_func(ComputerCard::AudioWorker)()
 	uint slice_num = pwm_gpio_to_slice_num(CV_OUT_1);
 	pwm_clear_irq(slice_num);
 	pwm_set_irq_enabled(slice_num, true);
-
+	
 	irq_set_exclusive_handler(PWM_IRQ_WRAP, ComputerCard::OnCVPWMWrap);
 	irq_set_priority(PWM_IRQ_WRAP, 255);
 	irq_set_enabled(PWM_IRQ_WRAP, true);
 
-
+	
 	// Set up DMA for SPI
 	spi_dmacfg = dma_channel_get_default_config(spi_dma);
 	channel_config_set_transfer_data_size(&spi_dmacfg, DMA_SIZE_16);
@@ -592,33 +587,23 @@ void __not_in_flash_func(ComputerCard::AudioWorker)()
 	// Set up DMA to transmit 2 samples to SPI
 	dma_channel_configure(spi_dma, &spi_dmacfg, &spi_get_hw(SPI_PORT)->dr, NULL, 2, false);
 
-	// Start the ADC, then immediately arm the DMA — FIFO is empty so alignment is guaranteed
 	adc_run(true);
-	dma_channel_set_write_addr(adc_dma, ADC_Buffer[dmaPhase], true);
 
 	while (1)
 	{
-		// If ready to restart (e.g. called from RequestADCRestart() in ProcessSample)
+		// If ready to restart
 		if (runADCMode == RUN_ADC_MODE_REQUEST_ADC_RESTART)
 		{
 			runADCMode = RUN_ADC_MODE_RUNNING;
 
-			// Clear any pending IRQ flags
-			dma_hw->ints0 = 1u << adc_dma;
+			dma_hw->ints0 = 1u << adc_dma; // reset adc interrupt flag
+			dma_channel_set_write_addr(adc_dma, ADC_Buffer[dmaPhase], true); // start writing into new buffer
+			dma_channel_set_read_addr(spi_dma, SPI_Buffer[dmaPhase], true); // start reading from new buffer
 
-			// Re-arm SPI read side
-			dma_channel_set_read_addr(spi_dma, SPI_Buffer[dmaPhase], true);
-
-			// Flush FIFO and re-sync round-robin to ch0
-			adc_run(false);
-			while (!adc_fifo_is_empty()) (void)adc_fifo_get();
 			adc_set_round_robin(0);
 			adc_select_input(0);
 			adc_set_round_robin(0b0001111U);
-
-			// Restart ADC then immediately arm DMA — FIFO empty so alignment guaranteed
 			adc_run(true);
-			dma_channel_set_write_addr(adc_dma, ADC_Buffer[dmaPhase], true);
 		}
 		else if (runADCMode == RUN_ADC_MODE_ADC_STOPPED)
 		{
@@ -654,15 +639,10 @@ void __not_in_flash_func(ComputerCard::BufferFull)()
 	static int norm_probe_count = 0;
 
 	// Internal variables for IIR filters on knobs/cv
-	// Initialised to mid-scale (32768 = knobs[x]>>4 of 2048) so IIR converges from centre,
-	// not from zero — eliminates the worst-case cold-start transient.
-	static volatile int32_t knobssm[4] = { 32768, 32768, 32768, 32768 };
-	static volatile int32_t cvsm[2] = { 32768, 32768 };  // cv = 2048 - cvsm>>4 = 0V
+	static volatile int32_t knobssm[4] = { 0, 0, 0, 0 };
+	static volatile int32_t cvsm[2] = { 0, 0 };
 	__attribute__((unused)) static int np = 0, np1 = 0, np2 = 0;
 
-	// Reset round-robin to ch0 — ISR latency is < one ADC conversion period (~2.6µs),
-	// so this executes before the ADC produces another sample, ensuring DMA re-arm
-	// picks up ch0 as its first sample of the next burst.
 	adc_select_input(0);
 
 	// Advance external mux to next state
@@ -675,8 +655,8 @@ void __not_in_flash_func(ComputerCard::BufferFull)()
 	dmaPhase = 1 - dmaPhase;
 
 	dma_hw->ints0 = 1u << adc_dma; // reset adc interrupt flag
-	dma_channel_set_write_addr(adc_dma, ADC_Buffer[dmaPhase], true); // start writing into next buffer
-	dma_channel_set_read_addr(spi_dma, SPI_Buffer[dmaPhase], true);  // start reading from next buffer
+	dma_channel_set_write_addr(adc_dma, ADC_Buffer[dmaPhase], true); // start writing into new buffer
+	dma_channel_set_read_addr(spi_dma, SPI_Buffer[dmaPhase], true); // start reading from new buffer
 
 	////////////////////////////////////////
 	// Collect various inputs and put them in variables for the DSP
