@@ -27,6 +27,8 @@ Six oscillator voices tuned to a chord you shape in real time. Knob Y sets the i
 | Audio Out 2 | Same 6 voices with per-voice phase offsets — stereo width |
 | Pulse Out 1 | Square wave one octave below root voice |
 | Pulse Out 2 | PWM square at the same frequency — duty cycle sweeps 30–70% at a rate set by detune amount |
+| CV Out 1 | Voiced interval — 0..12 semitones mapped to 0V..+1V (1V/oct); follows chord override |
+| CV Out 2 | Detune-rate LFO triangle wave — same rate as Pulse Out 2 PWM, ±5V |
 
 ## Controls
 
@@ -138,6 +140,14 @@ Each of the 13 Y positions (0–12 semitones) has 6 extension presets. A few exa
 1. Patch Pulse Out 1 to a VCA or filter — clean square one octave below root
 2. Patch Pulse Out 2 for a PWM version — duty cycle animates with detune amount; at 0 cents detune it sits static at 50%
 
+**Interval-keyed filter or oscillator**
+1. Patch CV Out 1 to a filter cutoff or a second oscillator's 1V/oct input
+2. As you tap through presets or trigger chord recall, the CV steps in semitones tracking the voiced interval — use it to transpose an external voice in harmony with whatever Chorgan is playing
+
+**Chorus depth animation**
+1. Patch CV Out 2 to a VCA or delay time CV input
+2. The triangle LFO rate scales with your detune setting (faster at higher detune), and is at 0V when detune is off — the modulation automatically breathes with the sound
+
 **Chord drone with timbre automation**
 1. Store 3–4 different chords (different Y positions and presets)
 2. Patch a slow clock into Pulse In 2 to step through them
@@ -153,6 +163,8 @@ Each of the 13 Y positions (0–12 semitones) has 6 extension presets. A few exa
 - Chord sequencer stores tuning ratio, interval, and preset — up to 8 chords
 - PulseIn2 arm guard: must be seen low before first rising edge is accepted (prevents boot glitch)
 - 200ms startup holdoff before audio begins — eliminates power-on glitch
-- RAM usage: ~10.6KB (4.1% of 256KB)
+- CV Out 1: interval in semitones × 170, giving 0V at unison and ~+1V at one octave (1V/oct); always reflects the voiced interval including chord override
+- CV Out 2: the Pulse Out 2 LFO triangle (0–16383) centred and divided by 4 → ±2047 counts ≈ ±5V; zero when detuneAmt = 0
+- RAM usage: ~10.7KB (4.2% of 256KB)
 
 Full source: https://github.com/uglifruit/Workshop_Computer/tree/main/Demonstrations%2BHelloWorlds/PicoSDK/ComputerCard/examples/chorgan

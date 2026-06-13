@@ -20,6 +20,8 @@
  * - Audio Out 2: Same voices with per-voice phase offsets (stereo width)
  * - Pulse Out 1: Sub-octave square wave (one octave below root)
  * - Pulse Out 2: PWM square at same frequency, duty swept by LFO
+ * - CV Out 1:   Voiced interval — 0..12 semitones → 0V..+1V (1V/oct; follows chord override)
+ * - CV Out 2:   Detune-rate LFO triangle wave (same rate as Pulse Out 2 PWM, ±5V)
  *
  * Voice layout:
  * - Voice 1: always root
@@ -596,6 +598,13 @@ void ChorganCard::ProcessSample() {
                     : (int32_t)(32767 - (pwmTop - 16384));
     uint32_t duty = 0x4CCCCCCC + (uint32_t)(pwmTri * 0x199A);
     PulseOut2((phase[0] >> 1) < duty);
+
+    // CV Out 1: voiced interval — 0..12 semitones → 0V..+1V (1V/oct)
+    CVOut1((int16_t)(intervalSemi * 170));
+
+    // CV Out 2: detune-rate LFO triangle — same rate as Pulse Out 2 PWM
+    // pwmTri 0..16383 → centred and scaled to -2047..+2047
+    CVOut2((int16_t)((pwmTri - 8192) >> 2));
 
     // 10. LEDs
     if (pendingStoreSlot >= 0) {
