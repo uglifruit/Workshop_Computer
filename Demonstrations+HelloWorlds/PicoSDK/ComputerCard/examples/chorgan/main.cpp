@@ -565,8 +565,7 @@ void ChorganCard::ProcessSample() {
             newTuningRatio  = overrideTuning;
             newIntervalSemi = overrideInterval;
             if (preset != overridePreset) {
-                preset     = overridePreset;
-                prevPreset = -1;
+                preset = overridePreset;
             }
         }
     }
