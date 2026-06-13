@@ -358,18 +358,23 @@ private:
     int32_t    chordPlayIdx  = 0;
 
     // Override state (set when a chord is recalled via PulseIn2)
-    bool       chordOverride    = false;
-    uint32_t   overrideTuning   = 65536;
-    int32_t    overrideInterval = 0;
-    int32_t    overridePreset   = 0;
+    bool       chordOverride      = false;
+    uint32_t   overrideTuning     = 65536;  // recalled chord's tuning
+    int32_t    overrideInterval   = 0;      // recalled chord's interval
+    int32_t    overridePreset     = 0;      // recalled chord's preset
+    int32_t    overrideSlot       = 0;      // slot index just recalled (for LED display)
+    uint32_t   overrideBaseTuning = 65536;  // X/CV1 voltage at moment of recall
+    int32_t    overrideBaseInterval = 0;    // Y voltage at moment of recall (semitones)
 
     // Hold detection — switch
     bool       holdArmed   = false;
     uint32_t   holdTimer   = 0;
 
-    // Hold detection — PulseIn1
-    bool       pulseHoldActive = false;
-    uint32_t   pulseHoldTimer  = 0;
+    // Chord store state — tracks pending store slot for LED feedback
+    int32_t    pendingStoreSlot = -1;  // slot being stored into (-1 = none)
+
+    // PulseIn2 arm guard — stays false until PU2 seen low (prevents boot glitch)
+    bool       pu2Armed = false;
 
     void updateTargets();
     static inline uint32_t phaseIncFrac(int note_lo, int note_hi, int32_t frac);
@@ -405,32 +410,24 @@ inline int32_t ChorganCard::sawSample(uint32_t ph) {
 }
 
 inline int32_t ChorganCard::blendWaveform(uint32_t ph, int32_t shape) {
-    // shape 0..4095, centre (2048) = pure sine.
-    // CCW (0→2048): SAW → TRI → SINE. Sine/tri blend kept narrow (512 counts).
-    // CW  (2048→4095): SINE → TRI → SAW.
-    //
-    // Zones CCW:  0..1535 = SAW→TRI (1536 wide), 1536..2047 = TRI→SINE (512 wide)
-    // Zones CW:   2048..2559 = SINE→TRI (512 wide), 2560..4095 = TRI→SAW (1536 wide)
-    if (shape < 1536) {
-        const int32_t t = (shape * 683) >> 10;
-        const int32_t s = sawSample(ph);
-        const int32_t r = triSample(ph);
-        return s + ((r - s) * t >> 10);
-    } else if (shape < 2048) {
-        const int32_t t = (shape - 1536) * 2;
-        const int32_t s = triSample(ph);
-        const int32_t r = sineSample(ph);
-        return s + ((r - s) * t >> 10);
-    } else if (shape < 2560) {
-        const int32_t t = (shape - 2048) * 2;
-        const int32_t s = sineSample(ph);
-        const int32_t r = triSample(ph);
-        return s + ((r - s) * t >> 10);
+    // shape 0..4095, centre (2048) = pure SAW, fully CCW or CW = pure SINE.
+    // Fold into distance from centre (0=centre/SAW, 2047=edge/SINE), then invert.
+    // Zones: 0..511 = SINE→TRI (512 wide), 512..2047 = TRI→SAW (1536 wide)
+    int32_t d = shape - 2048;
+    if (d < 0) d = -d;
+    if (d > 2047) d = 2047;
+    int32_t s = 2047 - d;  // 0 = edge (SINE), 2047 = centre (SAW)
+
+    if (s < 512) {
+        const int32_t t = s * 2;
+        const int32_t a = sineSample(ph);
+        const int32_t b = triSample(ph);
+        return a + ((b - a) * t >> 10);
     } else {
-        const int32_t t = ((shape - 2560) * 683) >> 10;
-        const int32_t s = triSample(ph);
-        const int32_t r = sawSample(ph);
-        return s + ((r - s) * t >> 10);
+        const int32_t t = ((s - 512) * 683) >> 10;
+        const int32_t a = triSample(ph);
+        const int32_t b = sawSample(ph);
+        return a + ((b - a) * t >> 10);
     }
 }
 
@@ -512,45 +509,57 @@ void ChorganCard::ProcessSample() {
     if (newIntervalSemi > 12) newIntervalSemi = 12;
 
     // 5. Switch: short tap (< 1s) advances preset; hold (>= 1s) stores chord.
-    // Pattern mirrors original Renaissance tap, extended with a duration counter.
     Switch sw = SwitchVal();
     if (sw == Switch::Down) {
         holdTimer++;
+        if (holdTimer == kHoldSamples && downArmed) {
+            pendingStoreSlot = chordWriteIdx;
+        }
     } else {
         if (holdTimer > 0 && downArmed) {
-            if (holdTimer < kHoldSamples) {
-                preset = (preset + 1) % kNumPresets;
-            } else {
+            if (pendingStoreSlot >= 0) {
                 chordSeq[chordWriteIdx] = { newTuningRatio, newIntervalSemi, preset };
                 chordWriteIdx = (chordWriteIdx + 1) % kMaxChords;
                 if (chordCount < kMaxChords) chordCount++;
+                pendingStoreSlot = -1;
+            } else {
+                // Short tap — advance preset; does NOT break chord override
+                preset = (preset + 1) % kNumPresets;
+                overridePreset = preset;  // sync so override block doesn't overwrite it
             }
             downArmed = false;
         }
+        if (holdTimer == 0) downArmed = true;
         holdTimer = 0;
-        if (sw != Switch::Down) downArmed = true;
     }
 
-    // 5b. PulseIn1: short pulse advances preset (no hold logic for now).
+    // 5b. PulseIn1: rising edge advances preset; does NOT break chord override.
     if (PulseIn1RisingEdge()) {
         preset = (preset + 1) % kNumPresets;
+        overridePreset = preset;  // sync so override block doesn't overwrite it
     }
 
-    // 5c. PulseIn2: rising edge steps through stored chord sequence.
-    if (PulseIn2RisingEdge() && chordCount > 0) {
-        int32_t idx    = chordPlayIdx % chordCount;
+    // 5c. PulseIn2: arm once seen low, then on rising edge recall next chord.
+    if (!PulseIn2()) pu2Armed = true;
+    if (pu2Armed && PulseIn2RisingEdge() && chordCount > 0) {
+        int32_t idx      = chordPlayIdx % chordCount;
         overrideTuning   = chordSeq[idx].tuningRatio;
         overrideInterval = chordSeq[idx].intervalSemi;
         overridePreset   = chordSeq[idx].preset;
-        chordOverride    = true;
-        chordPlayIdx     = (chordPlayIdx + 1) % chordCount;
+        overrideSlot     = idx;
+        // Latch the physical knob/CV positions NOW as the break baseline
+        overrideBaseTuning   = newTuningRatio;
+        overrideBaseInterval = newIntervalSemi;
+        chordOverride        = true;
+        chordPlayIdx         = (chordPlayIdx + 1) % chordCount;
     }
 
-    // 5d. Override: substitute recalled chord values, break when knobs move significantly.
+    // 5d. Override: substitute recalled chord. Break when physical controls move >1 semitone from baseline.
     if (chordOverride) {
-        int32_t tuningDiff = (int32_t)newTuningRatio - (int32_t)overrideTuning;
+        int32_t tuningDiff = (int32_t)newTuningRatio - (int32_t)overrideBaseTuning;
         if (tuningDiff < 0) tuningDiff = -tuningDiff;
-        if (tuningDiff > 3000 || newIntervalSemi != overrideInterval) {
+        // 1 semitone in Q16.16 ratio ≈ 3898 units
+        if (tuningDiff > 3898 || newIntervalSemi != overrideBaseInterval) {
             chordOverride = false;
         } else {
             newTuningRatio  = overrideTuning;
@@ -618,13 +627,32 @@ void ChorganCard::ProcessSample() {
     uint32_t duty = 0x4CCCCCCC + (uint32_t)(pwmTri * 0x199A);
     PulseOut2((phase[0] >> 1) < duty);
 
-    // 9. LEDs — show recalled chord state when override is active
-    int32_t displayInterval = chordOverride ? overrideInterval : intervalSemi;
-    int32_t displayPreset   = chordOverride ? overridePreset   : preset;
-    int32_t ledPos = (displayInterval * 4 + 6) / 12;
-    if (ledPos > 4) ledPos = 4;
-    for (int z = 0; z < 5; z++) LedOn(z, ledPos == z);
-    LedBrightness(5, (displayPreset * 4095) / (kNumPresets - 1));
+    // 9. LEDs
+    if (pendingStoreSlot >= 0) {
+        // Storing: LEDs 1,3,5 full bright; LEDs 0,2,4 = slot index in binary
+        LedBrightness(0, (pendingStoreSlot & 1) ? 4095 : 0);
+        LedBrightness(1, 4095);
+        LedBrightness(2, (pendingStoreSlot & 2) ? 4095 : 0);
+        LedBrightness(3, 4095);
+        LedBrightness(4, (pendingStoreSlot & 4) ? 4095 : 0);
+        LedBrightness(5, 4095);
+    } else if (chordOverride) {
+        // Chord held: LEDs 0,2,4 solid; LEDs 1,3,5 = overrideSlot in binary
+        LedBrightness(0, 4095);
+        LedBrightness(1, (overrideSlot & 1) ? 4095 : 0);
+        LedBrightness(2, 4095);
+        LedBrightness(3, (overrideSlot & 2) ? 4095 : 0);
+        LedBrightness(4, 4095);
+        LedBrightness(5, (overrideSlot & 4) ? 4095 : 0);
+    } else {
+        // Normal: interval indicator + preset level
+        int32_t displayInterval = chordOverride ? overrideInterval : intervalSemi;
+        int32_t displayPreset   = chordOverride ? overridePreset   : preset;
+        int32_t ledPos = (displayInterval * 4 + 6) / 12;
+        if (ledPos > 4) ledPos = 4;
+        for (int z = 0; z < 5; z++) LedOn(z, ledPos == z);
+        LedBrightness(5, (displayPreset * 4095) / (kNumPresets - 1));
+    }
 }
 
 // ---------------------------------------------------------------------------
