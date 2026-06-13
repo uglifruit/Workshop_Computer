@@ -336,6 +336,12 @@ private:
     int32_t  cv2Smoothed      = 0;
     int32_t  mainKnobSmoothed = 2048;
 
+    // Tuning cache — skip 64-bit division when knob/CV unchanged
+    int32_t  prevTuneQ10   = INT32_MIN;
+
+    // Startup holdoff — wait for ComputerCard knob IIR to settle before acting on values
+    uint32_t startupCount  = 0;
+
     // Switch state
     bool     downArmed    = true;
 
@@ -356,17 +362,17 @@ private:
 
 inline int32_t SpreadCard::sineSample(uint32_t ph) {
     uint32_t index = ph >> 23;
-    uint32_t frac  = (ph & 0x7FFFFFu) >> 7;
+    int32_t  frac  = (int32_t)((ph >> 13) & 0x3FFu);  // 0..1023, keeps muls in 32-bit
     int32_t s1 = SINE_TABLE[index & 0x1FFu];
     int32_t s2 = SINE_TABLE[(index + 1u) & 0x1FFu];
-    return (s2 * (int32_t)frac + s1 * (int32_t)(65536u - frac)) >> 16;
+    return s1 + ((s2 - s1) * frac >> 10);
 }
 
 inline int32_t SpreadCard::triSample(uint32_t ph) {
     if (ph < 0x40000000u)
         return (int32_t)(ph >> 15);
     else if (ph < 0xC0000000u)
-        return 32767 - (int32_t)((ph - 0x40000000u) >> 14);
+        return 32767 - (int32_t)((ph - 0x40000000u) >> 15);
     else
         return (int32_t)(ph >> 15) - 131072;
 }
@@ -464,6 +470,10 @@ void SpreadCard::ProcessSample() {
     cv1Smoothed      += (cv1      - cv1Smoothed)      >> 5;
     cv2Smoothed      += (cv2      - cv2Smoothed)      >> 5;
 
+    // Startup holdoff: ComputerCard knob IIR starts at 0, takes ~100ms to settle.
+    // Run smoothers every sample so they converge, but don't act on values until settled.
+    if (startupCount < 4800) { startupCount++; return; }
+
     // CV2 offsets timbre (main knob) bipolarly. CV2 range -2048..2047 maps to ±2048 on 0..4095 scale.
     int32_t timbre = mainKnobSmoothed + cv2Smoothed;
     if (timbre < 0)    timbre = 0;
@@ -476,12 +486,16 @@ void SpreadCard::ProcessSample() {
     // Clamp to ±60 semitones (±5 octaves)
     if (tuneQ10 < -60 * 1024) tuneQ10 = -60 * 1024;
     if (tuneQ10 >  60 * 1024) tuneQ10 =  60 * 1024;
-    // Convert to Q16.16 ratio via MIDI LUT: ratio = phaseInc(60+offset) / phaseInc(60)
-    int32_t  tuneNote = 60 + (tuneQ10 >> 10);
-    int32_t  tuneFrac = tuneQ10 & 0x3FF;
-    if (tuneQ10 < 0) { tuneNote = 60 + (tuneQ10 >> 10) - 1; tuneFrac = (1024 + (tuneQ10 & 0x3FF)) & 0x3FF; }
-    uint32_t rootInc  = phaseIncFrac(tuneNote, tuneNote + 1, tuneFrac);
-    uint32_t newTuningRatio = (uint32_t)(((uint64_t)rootInc << 16) / MIDI_PHASE_INC[60]);
+    // Cache the 64-bit division — only recompute when tuning actually changes.
+    uint32_t newTuningRatio = tuningRatio;
+    if (tuneQ10 != prevTuneQ10) {
+        prevTuneQ10 = tuneQ10;
+        int32_t  tuneNote = 60 + (tuneQ10 >> 10);
+        int32_t  tuneFrac = tuneQ10 & 0x3FF;
+        if (tuneQ10 < 0) { tuneNote = 60 + (tuneQ10 >> 10) - 1; tuneFrac = (1024 + (tuneQ10 & 0x3FF)) & 0x3FF; }
+        uint32_t rootInc  = phaseIncFrac(tuneNote, tuneNote + 1, tuneFrac);
+        newTuningRatio = (uint32_t)(((uint64_t)rootInc << 16) / MIDI_PHASE_INC[60]);
+    }
 
     // 4. Interval: Knob Y only (CV2 now drives timbre).
     int32_t intervalRaw = knobYSmoothed;
