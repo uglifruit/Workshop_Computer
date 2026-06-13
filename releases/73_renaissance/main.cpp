@@ -466,25 +466,19 @@ void SpreadCard::ProcessSample() {
 
     // 2. Smooth controls — run every sample from the start so smoothers are
     // fully converged before we act on the values.
-    mainKnobSmoothed += (rawMain - mainKnobSmoothed) >> 5;
-    knobXSmoothed    += (rawX    - knobXSmoothed)    >> 5;
-    knobYSmoothed    += (rawY    - knobYSmoothed)    >> 5;
-    cv1Smoothed      += (cv1      - cv1Smoothed)      >> 5;
-    cv2Smoothed      += (cv2      - cv2Smoothed)      >> 5;
+    // τ≈64 samples: slow enough that a single bad ADC sample moves output by only 1/64.
+    mainKnobSmoothed += (rawMain - mainKnobSmoothed) >> 6;
+    knobXSmoothed    += (rawX    - knobXSmoothed)    >> 6;
+    knobYSmoothed    += (rawY    - knobYSmoothed)    >> 6;
+    cv1Smoothed      += (cv1      - cv1Smoothed)      >> 6;
+    cv2Smoothed      += (cv2      - cv2Smoothed)      >> 6;
 
     // Startup holdoff: wait for ComputerCard knob IIR (τ≈128 updates per channel,
-    // 4 audio samples per update = ~2700 samples to settle) plus margin.
-    // On exit, seed our smoothers directly from the now-settled KnobVal readings
-    // so there is zero convergence transient when audio starts.
+    // 4 audio samples per update — needs ~4200 samples to reach <1 LSB error).
+    // 9600 samples = ~200ms gives comfortable margin. Smoothers run throughout
+    // so they are fully converged when audio starts; no one-shot seed needed.
     if (startupCount < 9600) {
         startupCount++;
-        if (startupCount == 9600) {
-            mainKnobSmoothed = rawMain;
-            knobXSmoothed    = rawX;
-            knobYSmoothed    = rawY;
-            cv1Smoothed      = cv1;
-            cv2Smoothed      = cv2;
-        }
         return;
     }
 
