@@ -45,8 +45,6 @@
 constexpr int32_t  kCountsPerOctave  = 341;
 constexpr int32_t  kMaxChords        = 8;
 constexpr uint32_t kHoldSamples      = 48000;
-constexpr int32_t  kKnobMaxSlew      = 200;    // max counts/sample — blocks ADC corruption jumps
-constexpr uint32_t kSwitchDebounce   = 240;    // ~5ms at 48kHz — ignore glitches shorter than this
 constexpr int32_t kNumVoices        = 6;
 constexpr int32_t kNumIntervals     = 13;   // 0..12 semitones
 constexpr int32_t kNumPresets       = 6;    // extension presets per interval
@@ -342,22 +340,11 @@ private:
     int32_t  cv2Smoothed      = 0;
     int32_t  mainKnobSmoothed = 2048;
 
-    // Slew-rate limiters — protect against single-sample ADC corruption jumps
-    int32_t  knobXPrev         = 2048;
-    int32_t  knobYPrev         = 2048;
-    int32_t  mainKnobPrev      = 2048;
-
-    // Interval hysteresis — semitone doesn't change until knobY is well inside new zone
-    int32_t  intervalHyst      = 0;  // latched knobYSmoothed used for semitone detection
-
-    // Tuning cache — avoid 64-bit division every sample
-    int32_t  prevTuneQ10      = INT32_MIN;  // forces compute on first sample
+    // Tuning cache — skip 64-bit division when knob/CV unchanged
+    int32_t  prevTuneQ10      = INT32_MIN;
 
     // Switch state
-    bool     downArmed       = true;
-    Switch   swDebounced     = Switch::Middle;  // debounced switch state
-    Switch   swPrev          = Switch::Middle;  // previous raw reading
-    uint32_t swDebounceCount = 0;               // consecutive samples same reading
+    bool     downArmed    = true;
 
     // Pulse Out 2 PWM LFO
     uint32_t pwmPhase     = 0;
@@ -406,7 +393,7 @@ private:
 
 inline int32_t ChorganCard::sineSample(uint32_t ph) {
     uint32_t index = ph >> 23;
-    int32_t  frac  = (int32_t)((ph >> 13) & 0x3FFu);  // 0..1023
+    int32_t  frac  = (int32_t)((ph >> 13) & 0x3FFu);  // 0..1023, keeps muls in 32-bit
     int32_t s1 = SINE_TABLE[index & 0x1FFu];
     int32_t s2 = SINE_TABLE[(index + 1u) & 0x1FFu];
     return s1 + ((s2 - s1) * frac >> 10);
@@ -494,15 +481,6 @@ void ChorganCard::ProcessSample() {
     int32_t cv1      = CVIn1();
     int32_t cv2      = CVIn2();
 
-    // 1b. Slew-rate limiter — clamps single-sample jumps caused by ADC/mux corruption
-    // from fast CV/pulse inputs. Max 200 counts/sample = full sweep in ~20ms, faster
-    // than any real knob movement. A corruption jump of 2000+ counts gets clamped.
-    {
-        int32_t dX = knobX    - knobXPrev;    if (dX >  kKnobMaxSlew) dX =  kKnobMaxSlew; if (dX < -kKnobMaxSlew) dX = -kKnobMaxSlew; knobX    = knobXPrev    + dX; knobXPrev    = knobX;
-        int32_t dY = knobY    - knobYPrev;    if (dY >  kKnobMaxSlew) dY =  kKnobMaxSlew; if (dY < -kKnobMaxSlew) dY = -kKnobMaxSlew; knobY    = knobYPrev    + dY; knobYPrev    = knobY;
-        int32_t dM = mainKnob - mainKnobPrev; if (dM >  kKnobMaxSlew) dM =  kKnobMaxSlew; if (dM < -kKnobMaxSlew) dM = -kKnobMaxSlew; mainKnob = mainKnobPrev + dM; mainKnobPrev = mainKnob;
-    }
-
     // 2. Smooth controls
     mainKnobSmoothed += (mainKnob - mainKnobSmoothed) >> 5;
     knobXSmoothed    += (knobX    - knobXSmoothed)    >> 5;
@@ -520,9 +498,6 @@ void ChorganCard::ProcessSample() {
                     + (knobXSmoothed - 2048) * 6;
     if (tuneQ10 < -60 * 1024) tuneQ10 = -60 * 1024;
     if (tuneQ10 >  60 * 1024) tuneQ10 =  60 * 1024;
-    // Cache the 64-bit division — only recompute when tuning actually changes.
-    // On Cortex-M0+ software 64-bit division is ~200 cycles; skipping it every
-    // sample that tuneQ10 is unchanged saves ~1.4µs off the 20.8µs ISR budget.
     uint32_t newTuningRatio = tuningRatio;
     if (tuneQ10 != prevTuneQ10) {
         prevTuneQ10 = tuneQ10;
@@ -533,42 +508,15 @@ void ChorganCard::ProcessSample() {
         newTuningRatio = (uint32_t)(((uint64_t)rootInc << 16) / MIDI_PHASE_INC[60]);
     }
 
-    // 4. Interval: Knob Y with hysteresis.
-    // One semitone = 4096/13 ≈ 315 counts. Require the knob to move 80 counts past
-    // the boundary before accepting a new semitone — prevents ADC mux corruption
-    // from sustained drift (driven by Main knob movement) triggering an unwanted step.
-    {
-        int32_t raw = knobYSmoothed;
-        if (raw < 0)    raw = 0;
-        if (raw > 4095) raw = 4095;
-        int32_t curSemi  = (intervalHyst * 13) >> 12;
-        if (curSemi > 12) curSemi = 12;
-        int32_t candSemi = (raw * 13) >> 12;
-        if (candSemi > 12) candSemi = 12;
-        if (candSemi != curSemi) {
-            int32_t hi       = (candSemi > curSemi) ? candSemi : curSemi;
-            int32_t boundary = (hi * 4096) / 13;
-            if (candSemi > curSemi && raw >= boundary + 80) intervalHyst = raw;
-            if (candSemi < curSemi && raw <= boundary - 80) intervalHyst = raw;
-        }
-    }
-    int32_t newIntervalSemi = (intervalHyst * 13) >> 12;
+    // 4. Interval: Knob Y only, discrete semitone steps.
+    int32_t intervalRaw = knobYSmoothed;
+    if (intervalRaw < 0)    intervalRaw = 0;
+    if (intervalRaw > 4095) intervalRaw = 4095;
+    int32_t newIntervalSemi = (intervalRaw * 13) >> 12;
     if (newIntervalSemi > 12) newIntervalSemi = 12;
 
-    // 5. Switch: debounce raw reading before use — ADC mux corruption can produce
-    // spurious Switch::Down glitches lasting 1–2 samples, triggering false taps.
-    // Require kSwitchDebounce consecutive samples of the same state before accepting.
-    {
-        Switch swRaw = SwitchVal();
-        if (swRaw == swPrev) {
-            if (swDebounceCount < kSwitchDebounce) swDebounceCount++;
-            if (swDebounceCount == kSwitchDebounce) swDebounced = swRaw;
-        } else {
-            swDebounceCount = 0;
-            swPrev = swRaw;
-        }
-    }
-    Switch sw = swDebounced;
+    // 5. Switch: short tap (< 1s) advances preset; hold (>= 1s) stores chord.
+    Switch sw = SwitchVal();
     if (sw == Switch::Down) {
         holdTimer++;
         if (holdTimer == kHoldSamples && downArmed) {
