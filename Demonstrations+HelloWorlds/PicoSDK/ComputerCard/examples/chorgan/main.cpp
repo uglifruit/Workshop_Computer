@@ -556,9 +556,9 @@ void ChorganCard::ProcessSample() {
     bool knobCW = (mainKnobSmoothed >= 2048);
     int32_t detuneAmt;
     if (sw == Switch::Up) {
-        detuneAmt = knobCW ? 243 : 152;
+        detuneAmt = knobCW ? 274 : 182;  // Up+CW=18c, Up+CCW=12c
     } else {
-        detuneAmt = knobCW ? 76 : 0;
+        detuneAmt = knobCW ? 91 : 0;     // Mid+CW=6c, Mid+CCW=0c
     }
     int32_t mix1 = 0, mix2 = 0;
     for (int i = 0; i < kNumVoices; i++) {
