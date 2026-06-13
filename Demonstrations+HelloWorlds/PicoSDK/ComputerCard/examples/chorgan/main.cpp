@@ -399,7 +399,7 @@ inline int32_t ChorganCard::sineSample(uint32_t ph) {
     uint32_t frac  = (ph & 0x7FFFFFu) >> 7;
     int32_t s1 = SINE_TABLE[index & 0x1FFu];
     int32_t s2 = SINE_TABLE[(index + 1u) & 0x1FFu];
-    return (s2 * (int32_t)frac + s1 * (int32_t)(65536u - frac)) >> 16;
+    return (int32_t)(((int64_t)s2 * frac + (int64_t)s1 * (65536u - frac)) >> 16);
 }
 
 inline int32_t ChorganCard::triSample(uint32_t ph) {
