@@ -42,7 +42,9 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-constexpr int32_t kCountsPerOctave  = 341;
+constexpr int32_t  kCountsPerOctave  = 341;
+constexpr int32_t  kMaxChords        = 8;
+constexpr uint32_t kHoldSamples      = 48000;
 constexpr int32_t kNumVoices        = 6;
 constexpr int32_t kNumIntervals     = 13;   // 0..12 semitones
 constexpr int32_t kNumPresets       = 6;    // extension presets per interval
@@ -350,8 +352,6 @@ private:
         int32_t  intervalSemi;
         int32_t  preset;
     };
-    static constexpr int32_t  kMaxChords    = 8;
-    static constexpr uint32_t kHoldSamples  = 48000;  // 1 second at 48kHz
     ChordState chordSeq[kMaxChords] = {};
     int32_t    chordCount    = 0;
     int32_t    chordWriteIdx = 0;
