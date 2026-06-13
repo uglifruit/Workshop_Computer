@@ -342,6 +342,12 @@ private:
     // Startup holdoff — wait for ComputerCard knob IIR to settle before acting on values
     uint32_t startupCount  = 0;
 
+    // Freeze guard — holds last-good knob state if ADC glitch drives knobs to zero
+    int32_t  lastGoodMainKnob = 2048;
+    int32_t  lastGoodKnobX    = 2048;
+    int32_t  lastGoodKnobY    = 2048;
+    uint32_t frozenSamples    = 0;
+
     // Switch state
     bool     downArmed    = true;
 
@@ -457,29 +463,52 @@ void SpreadCard::updateTargets() {
 
 void SpreadCard::ProcessSample() {
     // 1. Read controls
-    int32_t mainKnob = KnobVal(Knob::Main);
-    int32_t knobX    = KnobVal(Knob::X);
-    int32_t knobY    = KnobVal(Knob::Y);
-    int32_t cv1      = CVIn1();
-    int32_t cv2      = CVIn2();
+    int32_t rawMain = KnobVal(Knob::Main);
+    int32_t rawX    = KnobVal(Knob::X);
+    int32_t rawY    = KnobVal(Knob::Y);
+    int32_t cv1     = CVIn1();
+    int32_t cv2     = CVIn2();
 
-    // 2. Smooth controls
+    // 2. Startup holdoff: ComputerCard knob IIR starts at 0, takes ~100ms to settle.
+    // Run smoothers every sample so they converge, but don't act on values until settled.
+    if (startupCount < 4800) {
+        startupCount++;
+        cv1Smoothed += (cv1 - cv1Smoothed) >> 5;
+        cv2Smoothed += (cv2 - cv2Smoothed) >> 5;
+        return;
+    }
+
+    // 3. Freeze guard: if all three raw knob values simultaneously read near-zero while
+    // the switch reads Down, the ADC round-robin has likely glitched (adc_select_input race
+    // or E11 FIFO overrun). Hold last-good knob state; audio keeps playing at last stable voicing.
+    if (rawMain < 30 && rawX < 30 && rawY < 30 && SwitchVal() == Switch::Down) {
+        frozenSamples++;
+    } else {
+        frozenSamples    = 0;
+        lastGoodMainKnob = rawMain;
+        lastGoodKnobX    = rawX;
+        lastGoodKnobY    = rawY;
+    }
+    bool frozen = (frozenSamples >= 4800);
+
+    // When frozen, feed smoothers from last-good values so they don't drift toward zero.
+    int32_t mainKnob = frozen ? lastGoodMainKnob : rawMain;
+    int32_t knobX    = frozen ? lastGoodKnobX    : rawX;
+    int32_t knobY    = frozen ? lastGoodKnobY    : rawY;
+
+    // 4. Smooth controls
     mainKnobSmoothed += (mainKnob - mainKnobSmoothed) >> 5;
     knobXSmoothed    += (knobX    - knobXSmoothed)    >> 5;
     knobYSmoothed    += (knobY    - knobYSmoothed)    >> 5;
     cv1Smoothed      += (cv1      - cv1Smoothed)      >> 5;
     cv2Smoothed      += (cv2      - cv2Smoothed)      >> 5;
 
-    // Startup holdoff: ComputerCard knob IIR starts at 0, takes ~100ms to settle.
-    // Run smoothers every sample so they converge, but don't act on values until settled.
-    if (startupCount < 4800) { startupCount++; return; }
-
     // CV2 offsets timbre (main knob) bipolarly. CV2 range -2048..2047 maps to ±2048 on 0..4095 scale.
     int32_t timbre = mainKnobSmoothed + cv2Smoothed;
     if (timbre < 0)    timbre = 0;
     if (timbre > 4095) timbre = 4095;
 
-    // 3. Tuning: CV1 + KnobX as Q10 semitone offset from MIDI 60.
+    // 5. Tuning: CV1 + KnobX as Q10 semitone offset from MIDI 60.
     // Converted to a Q16.16 ratio in updateTargets() and applied to all voices uniformly.
     int32_t tuneQ10 = (cv1Smoothed * 12288) / kCountsPerOctave  // CV1 offset from 60
                     + (knobXSmoothed - 2048) * 6;               // KnobX ±12 semitones
@@ -497,22 +526,22 @@ void SpreadCard::ProcessSample() {
         newTuningRatio = (uint32_t)(((uint64_t)rootInc << 16) / MIDI_PHASE_INC[60]);
     }
 
-    // 4. Interval: Knob Y only (CV2 now drives timbre).
+    // 6. Interval: Knob Y only (CV2 now drives timbre).
     int32_t intervalRaw = knobYSmoothed;
     if (intervalRaw < 0)    intervalRaw = 0;
     if (intervalRaw > 4095) intervalRaw = 4095;
     int32_t newIntervalSemi = (intervalRaw * 13) >> 12;  // 0..12
     if (newIntervalSemi > 12) newIntervalSemi = 12;
 
-    // 5. Switch: tap Down to advance preset.
-    Switch sw = SwitchVal();
+    // 7. Switch: tap Down to advance preset. Suppressed when frozen (switchVal = Down always).
+    Switch sw = frozen ? Switch::Middle : SwitchVal();
     if (sw == Switch::Down && downArmed) {
         preset    = (preset + 1) % kNumPresets;
         downArmed = false;
     }
     if (sw != Switch::Down) downArmed = true;
 
-    // 6. Update targets if anything changed
+    // 8. Update targets if anything changed
     bool changed = false;
     if (newTuningRatio != prevTuningRatio) {
         tuningRatio     = newTuningRatio;
@@ -530,12 +559,12 @@ void SpreadCard::ProcessSample() {
     }
     if (changed) updateTargets();
 
-    // 5b. Pulse In 1 rising edge → advance preset (same as tapping switch Down)
+    // 8b. Pulse In 1 rising edge → advance preset (same as tapping switch Down)
     if (PulseIn1RisingEdge()) {
         preset = (preset + 1) % kNumPresets;
     }
 
-    // 7. Oscillator loop — 6 voices
+    // 9. Oscillator loop — 6 voices
     // Detune: symmetric fan across voices. 1 cent ≈ amt 15 (= 38/65536 * 2.5 voices).
     // Switch Mid + CCW=0c, Mid + CW=5c, Up + CCW=10c, Up + CW=16c.
     bool knobCW = (mainKnobSmoothed >= 2048);
@@ -564,7 +593,7 @@ void SpreadCard::ProcessSample() {
     AudioOut1((int16_t)mix1);
     AudioOut2((int16_t)mix2);
 
-    // 8. Pulse outputs
+    // 10. Pulse outputs
     // Pulse Out 1: sub-octave square — bit 30 of voice 0 phase (one octave below root)
     PulseOut1(phase[0] & 0x40000000u);
 
@@ -577,7 +606,7 @@ void SpreadCard::ProcessSample() {
     uint32_t duty = 0x4CCCCCCC + (uint32_t)(pwmTri * 0x199A);
     PulseOut2((phase[0] >> 1) < duty);
 
-    // 9. LEDs
+    // 11. LEDs
     // LEDs 0–4: interval position (0..12 semitones across 5 LEDs)
     int32_t ledPos = (intervalSemi * 4 + 6) / 12;
     if (ledPos > 4) ledPos = 4;
