@@ -671,12 +671,14 @@ void __not_in_flash_func(ComputerCard::BufferFull)()
 
 	dma_hw->ints0 = 1u << adc_dma; // reset adc interrupt flag
 
-	// Drain any stale samples the ADC produced since DMA completed — this is the
-	// fix for the alignment race: FIFO empty before re-arm guarantees buffer[0] = ch0.
+	// Stop ADC, drain FIFO, re-arm DMA, restart ADC — the only race-free way to
+	// guarantee ADC_Buffer[][0] is always ch0. Any samples produced between DMA
+	// completion and re-arm are discarded; the next 8 are guaranteed aligned.
+	hw_clear_bits(&adc_hw->cs, ADC_CS_START_MANY_BITS);
 	while (!adc_fifo_is_empty()) (void)adc_fifo_get();
-
 	dma_channel_set_write_addr(adc_dma, ADC_Buffer[dmaPhase], true); // start writing into next buffer
 	dma_channel_set_read_addr(spi_dma, SPI_Buffer[dmaPhase], true);  // start reading from next buffer
+	hw_set_bits(&adc_hw->cs, ADC_CS_START_MANY_BITS);
 
 	////////////////////////////////////////
 	// Collect various inputs and put them in variables for the DSP
