@@ -45,6 +45,7 @@
 constexpr int32_t  kCountsPerOctave  = 341;
 constexpr int32_t  kMaxChords        = 8;
 constexpr uint32_t kHoldSamples      = 48000;
+constexpr uint32_t kRailLockout      = 24000;  // 0.5s — knob stuck-at-rail detection
 constexpr int32_t kNumVoices        = 6;
 constexpr int32_t kNumIntervals     = 13;   // 0..12 semitones
 constexpr int32_t kNumPresets       = 6;    // extension presets per interval
@@ -340,6 +341,14 @@ private:
     int32_t  cv2Smoothed      = 0;
     int32_t  mainKnobSmoothed = 2048;
 
+    // Rail-stuck guards — protect against ADC/mux corruption from fast CV/pulse inputs
+    uint32_t knobXRailCount    = 0;
+    uint32_t knobYRailCount    = 0;
+    uint32_t mainKnobRailCount = 0;
+    int32_t  knobXSafe         = 2048;
+    int32_t  knobYSafe         = 2048;
+    int32_t  mainKnobSafe      = 2048;
+
     // Switch state
     bool     downArmed    = true;
 
@@ -477,6 +486,21 @@ void ChorganCard::ProcessSample() {
     int32_t knobY    = KnobVal(Knob::Y);
     int32_t cv1      = CVIn1();
     int32_t cv2      = CVIn2();
+
+    // 1b. Rail-stuck guard — fast signals on CV/pulse inputs can corrupt the shared
+    // ADC mux, driving knob IIR accumulators in ComputerCard to 0 or 4095 and
+    // keeping them there. If a knob read is railed for >0.5s, hold the last safe value.
+    if (mainKnob <= 0 || mainKnob >= 4095) {
+        if (++mainKnobRailCount > kRailLockout) mainKnob = mainKnobSafe;
+    } else { mainKnobRailCount = 0; mainKnobSafe = mainKnob; }
+
+    if (knobX <= 0 || knobX >= 4095) {
+        if (++knobXRailCount > kRailLockout) knobX = knobXSafe;
+    } else { knobXRailCount = 0; knobXSafe = knobX; }
+
+    if (knobY <= 0 || knobY >= 4095) {
+        if (++knobYRailCount > kRailLockout) knobY = knobYSafe;
+    } else { knobYRailCount = 0; knobYSafe = knobY; }
 
     // 2. Smooth controls
     mainKnobSmoothed += (mainKnob - mainKnobSmoothed) >> 5;
