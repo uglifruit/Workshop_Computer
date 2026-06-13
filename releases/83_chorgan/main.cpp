@@ -350,6 +350,9 @@ private:
     // Interval hysteresis — semitone doesn't change until knobY is well inside new zone
     int32_t  intervalHyst      = 0;  // latched knobYSmoothed used for semitone detection
 
+    // Tuning cache — avoid 64-bit division every sample
+    int32_t  prevTuneQ10      = INT32_MIN;  // forces compute on first sample
+
     // Switch state
     bool     downArmed       = true;
     Switch   swDebounced     = Switch::Middle;  // debounced switch state
@@ -403,10 +406,10 @@ private:
 
 inline int32_t ChorganCard::sineSample(uint32_t ph) {
     uint32_t index = ph >> 23;
-    uint32_t frac  = (ph & 0x7FFFFFu) >> 7;
+    int32_t  frac  = (int32_t)((ph >> 13) & 0x3FFu);  // 0..1023
     int32_t s1 = SINE_TABLE[index & 0x1FFu];
     int32_t s2 = SINE_TABLE[(index + 1u) & 0x1FFu];
-    return (int32_t)(((int64_t)s2 * frac + (int64_t)s1 * (65536u - frac)) >> 16);
+    return s1 + ((s2 - s1) * frac >> 10);
 }
 
 inline int32_t ChorganCard::triSample(uint32_t ph) {
@@ -517,11 +520,18 @@ void ChorganCard::ProcessSample() {
                     + (knobXSmoothed - 2048) * 6;
     if (tuneQ10 < -60 * 1024) tuneQ10 = -60 * 1024;
     if (tuneQ10 >  60 * 1024) tuneQ10 =  60 * 1024;
-    int32_t  tuneNote = 60 + (tuneQ10 >> 10);
-    int32_t  tuneFrac = tuneQ10 & 0x3FF;
-    if (tuneQ10 < 0) { tuneNote = 60 + (tuneQ10 >> 10) - 1; tuneFrac = (1024 + (tuneQ10 & 0x3FF)) & 0x3FF; }
-    uint32_t rootInc  = phaseIncFrac(tuneNote, tuneNote + 1, tuneFrac);
-    uint32_t newTuningRatio = (uint32_t)(((uint64_t)rootInc << 16) / MIDI_PHASE_INC[60]);
+    // Cache the 64-bit division — only recompute when tuning actually changes.
+    // On Cortex-M0+ software 64-bit division is ~200 cycles; skipping it every
+    // sample that tuneQ10 is unchanged saves ~1.4µs off the 20.8µs ISR budget.
+    uint32_t newTuningRatio = tuningRatio;
+    if (tuneQ10 != prevTuneQ10) {
+        prevTuneQ10 = tuneQ10;
+        int32_t  tuneNote = 60 + (tuneQ10 >> 10);
+        int32_t  tuneFrac = tuneQ10 & 0x3FF;
+        if (tuneQ10 < 0) { tuneNote = 60 + (tuneQ10 >> 10) - 1; tuneFrac = (1024 + (tuneQ10 & 0x3FF)) & 0x3FF; }
+        uint32_t rootInc  = phaseIncFrac(tuneNote, tuneNote + 1, tuneFrac);
+        newTuningRatio = (uint32_t)(((uint64_t)rootInc << 16) / MIDI_PHASE_INC[60]);
+    }
 
     // 4. Interval: Knob Y with hysteresis.
     // One semitone = 4096/13 ≈ 315 counts. Require the knob to move 80 counts past
