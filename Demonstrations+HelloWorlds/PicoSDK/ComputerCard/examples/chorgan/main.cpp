@@ -347,6 +347,9 @@ private:
     int32_t  knobYPrev         = 2048;
     int32_t  mainKnobPrev      = 2048;
 
+    // Interval hysteresis — semitone doesn't change until knobY is well inside new zone
+    int32_t  intervalHyst      = 0;  // latched knobYSmoothed used for semitone detection
+
     // Switch state
     bool     downArmed       = true;
     Switch   swDebounced     = Switch::Middle;  // debounced switch state
@@ -520,11 +523,26 @@ void ChorganCard::ProcessSample() {
     uint32_t rootInc  = phaseIncFrac(tuneNote, tuneNote + 1, tuneFrac);
     uint32_t newTuningRatio = (uint32_t)(((uint64_t)rootInc << 16) / MIDI_PHASE_INC[60]);
 
-    // 4. Interval: Knob Y only, discrete semitone steps.
-    int32_t intervalRaw = knobYSmoothed;
-    if (intervalRaw < 0)    intervalRaw = 0;
-    if (intervalRaw > 4095) intervalRaw = 4095;
-    int32_t newIntervalSemi = (intervalRaw * 13) >> 12;
+    // 4. Interval: Knob Y with hysteresis.
+    // One semitone = 4096/13 ≈ 315 counts. Require the knob to move 80 counts past
+    // the boundary before accepting a new semitone — prevents ADC mux corruption
+    // from sustained drift (driven by Main knob movement) triggering an unwanted step.
+    {
+        int32_t raw = knobYSmoothed;
+        if (raw < 0)    raw = 0;
+        if (raw > 4095) raw = 4095;
+        int32_t curSemi  = (intervalHyst * 13) >> 12;
+        if (curSemi > 12) curSemi = 12;
+        int32_t candSemi = (raw * 13) >> 12;
+        if (candSemi > 12) candSemi = 12;
+        if (candSemi != curSemi) {
+            int32_t hi       = (candSemi > curSemi) ? candSemi : curSemi;
+            int32_t boundary = (hi * 4096) / 13;
+            if (candSemi > curSemi && raw >= boundary + 80) intervalHyst = raw;
+            if (candSemi < curSemi && raw <= boundary - 80) intervalHyst = raw;
+        }
+    }
+    int32_t newIntervalSemi = (intervalHyst * 13) >> 12;
     if (newIntervalSemi > 12) newIntervalSemi = 12;
 
     // 5. Switch: debounce raw reading before use — ADC mux corruption can produce
