@@ -587,6 +587,15 @@ void __not_in_flash_func(ComputerCard::AudioWorker)()
 	// Set up DMA to transmit 2 samples to SPI
 	dma_channel_configure(spi_dma, &spi_dmacfg, &spi_get_hw(SPI_PORT)->dr, NULL, 2, false);
 
+	// Pre-fill SPI buffers with 0V DAC words so the first DMA transfer outputs
+	// silence rather than uninitialised RAM, eliminating the power-on click.
+	uint16_t silence_a = dacval(0, DAC_CHANNEL_A);
+	uint16_t silence_b = dacval(0, DAC_CHANNEL_B);
+	for (int i = 0; i < 2; i++) {
+		SPI_Buffer[i][0] = silence_a;
+		SPI_Buffer[i][1] = silence_b;
+	}
+
 	adc_run(true);
 
 	while (1)
