@@ -472,11 +472,19 @@ void SpreadCard::ProcessSample() {
     cv1Smoothed      += (cv1      - cv1Smoothed)      >> 5;
     cv2Smoothed      += (cv2      - cv2Smoothed)      >> 5;
 
-    // Startup holdoff: wait for ComputerCard knob IIR (τ≈128 samples per mux channel,
-    // ~2700 samples total) and our own smoother (τ≈32 samples) to fully converge.
-    // 9600 samples = ~200ms — comfortably covers both IIRs and any mux settling.
+    // Startup holdoff: wait for ComputerCard knob IIR (τ≈128 updates per channel,
+    // 4 audio samples per update = ~2700 samples to settle) plus margin.
+    // On exit, seed our smoothers directly from the now-settled KnobVal readings
+    // so there is zero convergence transient when audio starts.
     if (startupCount < 9600) {
         startupCount++;
+        if (startupCount == 9600) {
+            mainKnobSmoothed = rawMain;
+            knobXSmoothed    = rawX;
+            knobYSmoothed    = rawY;
+            cv1Smoothed      = cv1;
+            cv2Smoothed      = cv2;
+        }
         return;
     }
 
