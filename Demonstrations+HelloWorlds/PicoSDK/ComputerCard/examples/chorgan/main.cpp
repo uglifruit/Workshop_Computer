@@ -344,6 +344,34 @@ private:
     // Pulse Out 2 PWM LFO
     uint32_t pwmPhase     = 0;
 
+    // Chord sequencer
+    struct ChordState {
+        uint32_t tuningRatio;
+        int32_t  intervalSemi;
+        int32_t  preset;
+    };
+    static constexpr int32_t  kMaxChords    = 8;
+    static constexpr uint32_t kHoldSamples  = 48000;  // 1 second at 48kHz
+    ChordState chordSeq[kMaxChords] = {};
+    int32_t    chordCount    = 0;
+    int32_t    chordWriteIdx = 0;
+    int32_t    chordPlayIdx  = 0;
+
+    // Override state (set when a chord is recalled via PulseIn2)
+    bool       chordOverride    = false;
+    uint32_t   overrideTuning   = 65536;
+    int32_t    overrideInterval = 0;
+    int32_t    overridePreset   = 0;
+
+    // Hold detection — switch
+    bool       holdArmed   = false;
+    uint32_t   holdTimer   = 0;
+
+    // Hold detection — PulseIn1
+    bool       pulseHoldActive = false;
+    uint32_t   pulseHoldTimer  = 0;
+    bool       pulseWasHigh    = false;
+
     void updateTargets();
     static inline uint32_t phaseIncFrac(int note_lo, int note_hi, int32_t frac);
     static inline int32_t __not_in_flash_func(sineSample)(uint32_t ph);
@@ -484,13 +512,79 @@ void ChorganCard::ProcessSample() {
     int32_t newIntervalSemi = (intervalRaw * 13) >> 12;
     if (newIntervalSemi > 12) newIntervalSemi = 12;
 
-    // 5. Switch: tap Down to advance preset.
+    // 5. Switch: hold (>1s) stores chord, short tap advances preset.
     Switch sw = SwitchVal();
-    if (sw == Switch::Down && downArmed) {
-        preset    = (preset + 1) % kNumPresets;
-        downArmed = false;
+    if (sw == Switch::Down) {
+        if (!holdArmed) {
+            holdArmed = true;
+            holdTimer = 0;
+        } else {
+            holdTimer++;
+            if (holdTimer >= kHoldSamples && downArmed) {
+                // HOLD: store current chord
+                chordSeq[chordWriteIdx] = { newTuningRatio, newIntervalSemi, preset };
+                chordWriteIdx = (chordWriteIdx + 1) % kMaxChords;
+                if (chordCount < kMaxChords) chordCount++;
+                downArmed = false;  // prevent re-store while held
+            }
+        }
+    } else {
+        if (holdArmed && holdTimer < kHoldSamples && downArmed) {
+            // SHORT TAP: advance preset
+            preset = (preset + 1) % kNumPresets;
+        }
+        holdArmed = false;
+        holdTimer = 0;
+        downArmed = true;
     }
-    if (sw != Switch::Down) downArmed = true;
+
+    // 5b. PulseIn1: hold stores chord, short pulse advances preset.
+    bool pulseNow = PulseIn1();
+    if (pulseNow && !pulseWasHigh) {
+        pulseHoldActive = true;
+        pulseHoldTimer  = 0;
+    } else if (pulseNow && pulseHoldActive) {
+        pulseHoldTimer++;
+        if (pulseHoldTimer >= kHoldSamples) {
+            chordSeq[chordWriteIdx] = { newTuningRatio, newIntervalSemi, preset };
+            chordWriteIdx = (chordWriteIdx + 1) % kMaxChords;
+            if (chordCount < kMaxChords) chordCount++;
+            pulseHoldActive = false;
+        }
+    } else if (!pulseNow && pulseWasHigh) {
+        if (pulseHoldActive) {
+            preset = (preset + 1) % kNumPresets;
+        }
+        pulseHoldActive = false;
+        pulseHoldTimer  = 0;
+    }
+    pulseWasHigh = pulseNow;
+
+    // 5c. PulseIn2: rising edge steps through stored chord sequence.
+    if (PulseIn2RisingEdge() && chordCount > 0) {
+        int32_t idx    = chordPlayIdx % chordCount;
+        overrideTuning   = chordSeq[idx].tuningRatio;
+        overrideInterval = chordSeq[idx].intervalSemi;
+        overridePreset   = chordSeq[idx].preset;
+        chordOverride    = true;
+        chordPlayIdx     = (chordPlayIdx + 1) % chordCount;
+    }
+
+    // 5d. Override: substitute recalled chord values, break when knobs move significantly.
+    if (chordOverride) {
+        int32_t tuningDiff = (int32_t)newTuningRatio - (int32_t)overrideTuning;
+        if (tuningDiff < 0) tuningDiff = -tuningDiff;
+        if (tuningDiff > 3000 || newIntervalSemi != overrideInterval) {
+            chordOverride = false;
+        } else {
+            newTuningRatio  = overrideTuning;
+            newIntervalSemi = overrideInterval;
+            if (preset != overridePreset) {
+                preset     = overridePreset;
+                prevPreset = -1;
+            }
+        }
+    }
 
     // 6. Update targets if anything changed
     bool changed = false;
@@ -510,18 +604,13 @@ void ChorganCard::ProcessSample() {
     }
     if (changed) updateTargets();
 
-    // Pulse In 1 rising edge → advance preset
-    if (PulseIn1RisingEdge()) {
-        preset = (preset + 1) % kNumPresets;
-    }
-
     // 7. Oscillator loop — 6 voices
     bool knobCW = (mainKnobSmoothed >= 2048);
     int32_t detuneAmt;
     if (sw == Switch::Up) {
-        detuneAmt = knobCW ? 243 : 152;  // Up+CW=16c, Up+CCW=10c
+        detuneAmt = knobCW ? 243 : 152;
     } else {
-        detuneAmt = knobCW ? 76 : 0;     // Mid+CW=5c, Mid+CCW=0c
+        detuneAmt = knobCW ? 76 : 0;
     }
     int32_t mix1 = 0, mix2 = 0;
     for (int i = 0; i < kNumVoices; i++) {
@@ -553,11 +642,13 @@ void ChorganCard::ProcessSample() {
     uint32_t duty = 0x4CCCCCCC + (uint32_t)(pwmTri * 0x199A);
     PulseOut2((phase[0] >> 1) < duty);
 
-    // 9. LEDs
-    int32_t ledPos = (intervalSemi * 4 + 6) / 12;
+    // 9. LEDs — show recalled chord state when override is active
+    int32_t displayInterval = chordOverride ? overrideInterval : intervalSemi;
+    int32_t displayPreset   = chordOverride ? overridePreset   : preset;
+    int32_t ledPos = (displayInterval * 4 + 6) / 12;
     if (ledPos > 4) ledPos = 4;
     for (int z = 0; z < 5; z++) LedOn(z, ledPos == z);
-    LedBrightness(5, (preset * 4095) / (kNumPresets - 1));
+    LedBrightness(5, (displayPreset * 4095) / (kNumPresets - 1));
 }
 
 // ---------------------------------------------------------------------------
