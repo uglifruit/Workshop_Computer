@@ -308,6 +308,7 @@ constexpr const int8_t* kExtensions[13] = {
 class SpreadCard : public ComputerCard {
 public:
     SpreadCard() {
+        EnableNormalisationProbe();
         updateTargets();
     }
 
@@ -456,6 +457,8 @@ void SpreadCard::ProcessSample() {
     int32_t knobY    = KnobVal(Knob::Y);
     int32_t cv1      = CVIn1();
     int32_t cv2      = CVIn2();
+    int32_t audioIn1 = Disconnected(Input::Audio1) ? 0 : AudioIn1();
+    int32_t audioIn2 = Disconnected(Input::Audio2) ? 0 : AudioIn2();
 
     // 2. Smooth controls
     mainKnobSmoothed += (mainKnob - mainKnobSmoothed) >> 5;
@@ -531,13 +534,21 @@ void SpreadCard::ProcessSample() {
     } else {
         detuneAmt = knobCW ? 76 : 0;     // Mid+CW=5c, Mid+CCW=0c
     }
+    // Audio In 1: FM — ±~1 semitone at full scale, zero when unpatched
+    // Audio In 2: PM — ±1/8 cycle at full scale, zero when unpatched
+    int32_t  fmOffset = audioIn1 * 2;
+    uint32_t pmOffset = (uint32_t)(audioIn2 << 18);
+
     int32_t mix1 = 0, mix2 = 0;
     for (int i = 0; i < kNumVoices; i++) {
         int32_t detune = ((2 * i - 5) * detuneAmt) >> 1;
-        uint32_t inc = (uint32_t)((int64_t)phaseIncBase[i] + ((int64_t)phaseIncBase[i] * detune >> 16));
+        uint32_t inc = (uint32_t)((int64_t)phaseIncBase[i] + ((int64_t)phaseIncBase[i] * detune >> 16)
+                                + ((int64_t)phaseIncBase[i] * fmOffset >> 16));
         phase[i] += inc;
-        mix1 += (blendWaveform(phase[i],                      timbre) * kAmpPerVoice) >> 8;
-        mix2 += (blendWaveform(phase[i] + kStereoOffsets[i],  timbre) * kAmpPerVoice) >> 8;
+        uint32_t ph1 = phase[i] + pmOffset;
+        uint32_t ph2 = phase[i] + pmOffset + kStereoOffsets[i];
+        mix1 += (blendWaveform(ph1, timbre) * kAmpPerVoice) >> 8;
+        mix2 += (blendWaveform(ph2, timbre) * kAmpPerVoice) >> 8;
     }
 
     mix1 >>= 2;
