@@ -16,6 +16,8 @@ Six oscillator voices tuned to a chord you shape in real time. The Y knob sets t
 |------|----------|
 | CV In 1 | Root pitch 1V/oct (0V = C4) — summed with Knob X |
 | CV In 2 | Timbre offset — bipolar, offsets the Main knob position |
+| Audio In 1 | FM — audio-rate pitch modulation across all 6 voices (±~1 semitone at full scale) |
+| Audio In 2 | PM — audio-rate phase modulation across all 6 voices (±1/8 cycle at full scale) |
 | Pulse In 1 | Rising edge advances the chord extension preset |
 
 ## Outputs
@@ -116,6 +118,7 @@ Each of the 13 Y positions (0–12 semitones) has 6 extension presets. A few exa
 - Detune zone (0/5/10/16 cents) determined by physical main knob position; CV In 2 cannot cross zone boundaries
 - Stereo width via per-voice phase offsets on Out 2 (0°, 15°, 30°, 45°, 60°, 75°)
 - Pulse Out 2 PWM: LFO rate proportional to detune amount — at 0 cents detune, duty is static at 50%
-- RAM usage: ~9.6KB (3.8% of 256KB)
+- Audio In 1 FM and Audio In 2 PM are applied at full audio rate with no smoothing — patch Audio Out back into Audio In 2 for feedback PM
+- RAM usage: ~9.7KB (3.8% of 256KB)
 
 Full source: https://github.com/uglifruit/Workshop_Computer/tree/main/Demonstrations%2BHelloWorlds/PicoSDK/ComputerCard/examples/spread
