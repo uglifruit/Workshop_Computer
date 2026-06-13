@@ -341,6 +341,7 @@ private:
 
     // Startup holdoff — wait for ComputerCard knob IIR to settle before acting on values
     uint32_t startupCount  = 0;
+    uint32_t fadeCount     = 0;      // counts 0→480 after holdoff for click-free fade-in
 
 
     // Switch state
@@ -568,6 +569,13 @@ void SpreadCard::ProcessSample() {
     if (mix1 < -2048) mix1 = -2048;
     if (mix2 >  2047) mix2 =  2047;
     if (mix2 < -2048) mix2 = -2048;
+
+    // Fade in over 480 samples (~10ms) after holdoff ends to avoid power-on click
+    if (fadeCount < 480) {
+        mix1 = (mix1 * (int32_t)fadeCount) / 480;
+        mix2 = (mix2 * (int32_t)fadeCount) / 480;
+        fadeCount++;
+    }
 
     AudioOut1((int16_t)mix1);
     AudioOut2((int16_t)mix2);
