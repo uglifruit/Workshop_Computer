@@ -485,26 +485,28 @@ void ChorganCard::ProcessSample() {
     int32_t cv1      = CVIn1();
     int32_t cv2      = CVIn2();
 
-    // Startup holdoff: ComputerCard's knob IIR initialises at 0 and takes ~2000 samples
-    // to converge. During that window, slam our smoothers to the raw knob values so we
-    // start at the correct position instead of jumping from 0.
-    if (startupCount < 2000) {
-        startupCount++;
-        mainKnobSmoothed = mainKnob;
-        knobXSmoothed    = knobX;
-        knobYSmoothed    = knobY;
-        cv1Smoothed      = cv1;
-        cv2Smoothed      = cv2;
-        prevTuneQ10      = INT32_MIN;  // force recompute after holdoff
-        return;
-    }
-
     // 2. Smooth controls
     mainKnobSmoothed += (mainKnob - mainKnobSmoothed) >> 5;
     knobXSmoothed    += (knobX    - knobXSmoothed)    >> 5;
     knobYSmoothed    += (knobY    - knobYSmoothed)    >> 5;
     cv1Smoothed      += (cv1      - cv1Smoothed)      >> 5;
     cv2Smoothed      += (cv2      - cv2Smoothed)      >> 5;
+
+    // Startup holdoff: ComputerCard's knob IIR (127/128 per sample) starts at 0.
+    // Let it run for 4800 samples (~100ms) before we act on knob values — by then
+    // the IIR has converged to >97% of the true value. We run our own IIR normally
+    // during this time so our smoothers also converge, but we don't update targets
+    // or produce audio until the holdoff expires.
+    // Also re-enters holdoff if a mux glitch drives all knob smoothers near-zero
+    // simultaneously — physically impossible unless all three knobs are hard CCW.
+    if (mainKnobSmoothed < 50 && knobXSmoothed < 50 && knobYSmoothed < 50) {
+        startupCount = 0;
+        prevTuneQ10  = INT32_MIN;
+    }
+    if (startupCount < 4800) {
+        startupCount++;
+        return;
+    }
 
     // CV2 offsets timbre (main knob) bipolarly.
     int32_t timbre = mainKnobSmoothed + cv2Smoothed;
