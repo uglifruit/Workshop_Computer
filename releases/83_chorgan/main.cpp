@@ -46,6 +46,7 @@ constexpr int32_t  kCountsPerOctave  = 341;
 constexpr int32_t  kMaxChords        = 8;
 constexpr uint32_t kHoldSamples      = 48000;
 constexpr int32_t  kKnobMaxSlew      = 200;    // max counts/sample — blocks ADC corruption jumps
+constexpr uint32_t kSwitchDebounce   = 240;    // ~5ms at 48kHz — ignore glitches shorter than this
 constexpr int32_t kNumVoices        = 6;
 constexpr int32_t kNumIntervals     = 13;   // 0..12 semitones
 constexpr int32_t kNumPresets       = 6;    // extension presets per interval
@@ -347,7 +348,10 @@ private:
     int32_t  mainKnobPrev      = 2048;
 
     // Switch state
-    bool     downArmed    = true;
+    bool     downArmed       = true;
+    Switch   swDebounced     = Switch::Middle;  // debounced switch state
+    Switch   swPrev          = Switch::Middle;  // previous raw reading
+    uint32_t swDebounceCount = 0;               // consecutive samples same reading
 
     // Pulse Out 2 PWM LFO
     uint32_t pwmPhase     = 0;
@@ -523,8 +527,20 @@ void ChorganCard::ProcessSample() {
     int32_t newIntervalSemi = (intervalRaw * 13) >> 12;
     if (newIntervalSemi > 12) newIntervalSemi = 12;
 
-    // 5. Switch: short tap (< 1s) advances preset; hold (>= 1s) stores chord.
-    Switch sw = SwitchVal();
+    // 5. Switch: debounce raw reading before use — ADC mux corruption can produce
+    // spurious Switch::Down glitches lasting 1–2 samples, triggering false taps.
+    // Require kSwitchDebounce consecutive samples of the same state before accepting.
+    {
+        Switch swRaw = SwitchVal();
+        if (swRaw == swPrev) {
+            if (swDebounceCount < kSwitchDebounce) swDebounceCount++;
+            if (swDebounceCount == kSwitchDebounce) swDebounced = swRaw;
+        } else {
+            swDebounceCount = 0;
+            swPrev = swRaw;
+        }
+    }
+    Switch sw = swDebounced;
     if (sw == Switch::Down) {
         holdTimer++;
         if (holdTimer == kHoldSamples && downArmed) {
