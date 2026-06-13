@@ -370,7 +370,6 @@ private:
     // Hold detection — PulseIn1
     bool       pulseHoldActive = false;
     uint32_t   pulseHoldTimer  = 0;
-    bool       pulseWasHigh    = false;
 
     void updateTargets();
     static inline uint32_t phaseIncFrac(int note_lo, int note_hi, int32_t frac);
@@ -515,35 +514,27 @@ void ChorganCard::ProcessSample() {
     // 5. Switch: hold (>1s) stores chord, short tap advances preset.
     Switch sw = SwitchVal();
     if (sw == Switch::Down) {
-        if (!holdArmed) {
-            holdArmed = true;
-            holdTimer = 0;
-        } else {
-            holdTimer++;
-            if (holdTimer >= kHoldSamples && downArmed) {
-                // HOLD: store current chord
-                chordSeq[chordWriteIdx] = { newTuningRatio, newIntervalSemi, preset };
-                chordWriteIdx = (chordWriteIdx + 1) % kMaxChords;
-                if (chordCount < kMaxChords) chordCount++;
-                downArmed = false;  // prevent re-store while held
-            }
+        holdTimer++;
+        if (holdTimer >= kHoldSamples && downArmed) {
+            chordSeq[chordWriteIdx] = { newTuningRatio, newIntervalSemi, preset };
+            chordWriteIdx = (chordWriteIdx + 1) % kMaxChords;
+            if (chordCount < kMaxChords) chordCount++;
+            downArmed = false;
         }
     } else {
-        if (holdArmed && holdTimer < kHoldSamples && downArmed) {
-            // SHORT TAP: advance preset
+        if (holdTimer > 0 && holdTimer < kHoldSamples && downArmed) {
             preset = (preset + 1) % kNumPresets;
         }
-        holdArmed = false;
         holdTimer = 0;
         downArmed = true;
     }
 
-    // 5b. PulseIn1: hold stores chord, short pulse advances preset.
-    bool pulseNow = PulseIn1();
-    if (pulseNow && !pulseWasHigh) {
+    // 5b. PulseIn1: rising edge starts hold timer; falling edge decides tap vs hold.
+    if (PulseIn1RisingEdge()) {
         pulseHoldActive = true;
         pulseHoldTimer  = 0;
-    } else if (pulseNow && pulseHoldActive) {
+    }
+    if (pulseHoldActive) {
         pulseHoldTimer++;
         if (pulseHoldTimer >= kHoldSamples) {
             chordSeq[chordWriteIdx] = { newTuningRatio, newIntervalSemi, preset };
@@ -551,14 +542,14 @@ void ChorganCard::ProcessSample() {
             if (chordCount < kMaxChords) chordCount++;
             pulseHoldActive = false;
         }
-    } else if (!pulseNow && pulseWasHigh) {
-        if (pulseHoldActive) {
+    }
+    if (PulseIn1FallingEdge()) {
+        if (pulseHoldActive && pulseHoldTimer < kHoldSamples) {
             preset = (preset + 1) % kNumPresets;
         }
         pulseHoldActive = false;
         pulseHoldTimer  = 0;
     }
-    pulseWasHigh = pulseNow;
 
     // 5c. PulseIn2: rising edge steps through stored chord sequence.
     if (PulseIn2RisingEdge() && chordCount > 0) {
