@@ -660,6 +660,11 @@ void __not_in_flash_func(ComputerCard::BufferFull)()
 	static volatile int32_t cvsm[2] = { 32768, 32768 };  // cv = 2048 - cvsm>>4 = 0V
 	__attribute__((unused)) static int np = 0, np1 = 0, np2 = 0;
 
+	// Reset round-robin to ch0 — ISR latency is < one ADC conversion period (~2.6µs),
+	// so this executes before the ADC produces another sample, ensuring DMA re-arm
+	// picks up ch0 as its first sample of the next burst.
+	adc_select_input(0);
+
 	// Advance external mux to next state
 	int next_mux_state = (mux_state + 1) & 0x3;
 	gpio_put(MX_A, next_mux_state & 1);
@@ -670,15 +675,8 @@ void __not_in_flash_func(ComputerCard::BufferFull)()
 	dmaPhase = 1 - dmaPhase;
 
 	dma_hw->ints0 = 1u << adc_dma; // reset adc interrupt flag
-
-	// Stop ADC, drain FIFO, re-arm DMA, restart ADC — the only race-free way to
-	// guarantee ADC_Buffer[][0] is always ch0. Any samples produced between DMA
-	// completion and re-arm are discarded; the next 8 are guaranteed aligned.
-	hw_clear_bits(&adc_hw->cs, ADC_CS_START_MANY_BITS);
-	while (!adc_fifo_is_empty()) (void)adc_fifo_get();
 	dma_channel_set_write_addr(adc_dma, ADC_Buffer[dmaPhase], true); // start writing into next buffer
 	dma_channel_set_read_addr(spi_dma, SPI_Buffer[dmaPhase], true);  // start reading from next buffer
-	hw_set_bits(&adc_hw->cs, ADC_CS_START_MANY_BITS);
 
 	////////////////////////////////////////
 	// Collect various inputs and put them in variables for the DSP

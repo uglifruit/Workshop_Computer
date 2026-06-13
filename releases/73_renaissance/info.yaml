@@ -2,5 +2,5 @@ Name: Renaissance
 Description: 6-voice harmonic spread oscillator — morphs from unison chorus through stacked 3rds, 5ths and octaves
 Language: C++ (Pico SDK)
 Creator: Andy Jenkinson (uglifruit)
-Version: 1.3.3
+Version: 1.3.4
 Status: Release
