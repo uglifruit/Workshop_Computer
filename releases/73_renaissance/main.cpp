@@ -456,8 +456,6 @@ void SpreadCard::ProcessSample() {
     int32_t knobY    = KnobVal(Knob::Y);
     int32_t cv1      = CVIn1();
     int32_t cv2      = CVIn2();
-    int32_t audioIn1 = AudioIn1();  // FM: audio-rate pitch mod, all voices
-    int32_t audioIn2 = AudioIn2();  // PM: audio-rate phase mod, all voices
 
     // 2. Smooth controls
     mainKnobSmoothed += (mainKnob - mainKnobSmoothed) >> 5;
@@ -533,24 +531,13 @@ void SpreadCard::ProcessSample() {
     } else {
         detuneAmt = knobCW ? 76 : 0;     // Mid+CW=5c, Mid+CCW=0c
     }
-    // Audio In 1: FM — audio-rate tuning ratio offset applied to all voices.
-    // ±2048 full scale → ±~1 semitone deviation (scale factor ≈ 2 × ratio-per-semitone/2048).
-    // Applied directly to phaseIncBase[] without smoothing so it tracks at audio rate.
-    // Audio In 2: PM — phase offset added when reading each voice.
-    // ±2048 → ±1/8 cycle (scale: 1<<18 = 262144).
-    int32_t fmOffset  = audioIn1 * 2;                   // Q16.16 ratio offset
-    uint32_t pmOffset = (uint32_t)((int32_t)(audioIn2 << 18));  // phase offset, all voices
-
     int32_t mix1 = 0, mix2 = 0;
     for (int i = 0; i < kNumVoices; i++) {
         int32_t detune = ((2 * i - 5) * detuneAmt) >> 1;
-        uint32_t inc = (uint32_t)((int64_t)phaseIncBase[i] + ((int64_t)phaseIncBase[i] * detune >> 16)
-                                + ((int64_t)phaseIncBase[i] * fmOffset >> 16));
+        uint32_t inc = (uint32_t)((int64_t)phaseIncBase[i] + ((int64_t)phaseIncBase[i] * detune >> 16));
         phase[i] += inc;
-        uint32_t ph1 = phase[i] + pmOffset;
-        uint32_t ph2 = phase[i] + pmOffset + kStereoOffsets[i];
-        mix1 += (blendWaveform(ph1, timbre) * kAmpPerVoice) >> 8;
-        mix2 += (blendWaveform(ph2, timbre) * kAmpPerVoice) >> 8;
+        mix1 += (blendWaveform(phase[i],                      timbre) * kAmpPerVoice) >> 8;
+        mix2 += (blendWaveform(phase[i] + kStereoOffsets[i],  timbre) * kAmpPerVoice) >> 8;
     }
 
     mix1 >>= 2;
