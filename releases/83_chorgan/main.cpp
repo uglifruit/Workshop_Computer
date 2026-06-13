@@ -592,10 +592,10 @@ void ChorganCard::ProcessSample() {
     PulseOut1(phase[0] & 0x40000000u);
 
     pwmPhase += (uint32_t)(detuneAmt * 900);
-    uint32_t pwmTop = pwmPhase >> 17;
-    int32_t  pwmTri = (pwmTop < 16384)
-                    ? (int32_t)pwmTop
-                    : (int32_t)(32767 - (pwmTop - 16384));
+    uint32_t pwmTop = pwmPhase >> 16;           // 16-bit counter 0..65535
+    int32_t  pwmTri = (pwmTop < 32768)
+                    ? (int32_t)(pwmTop >> 1)    // 0..16383 rising
+                    : (int32_t)((65535 - pwmTop) >> 1);  // 16383..0 falling
     uint32_t duty = 0x4CCCCCCC + (uint32_t)(pwmTri * 0x199A);
     PulseOut2((phase[0] >> 1) < duty);
 
