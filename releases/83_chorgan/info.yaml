@@ -2,5 +2,5 @@ Name: Chorgan
 Description: 6-voice harmonic chord oscillator — experimental sandbox branched from Renaissance
 Language: C++ (Pico SDK)
 Creator: Andy Jenkinson (uglifruit)
-Version: 0.3.2
+Version: 0.4.0
 Status: Experimental

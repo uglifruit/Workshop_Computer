@@ -1,16 +1,19 @@
 /**
  * Chorgan - Workshop Computer program card
- * 6-voice harmonic oscillator — experimental sandbox branched from Renaissance.
+ * 6-voice harmonic chord oscillator.
  *
  * Controls:
  * - CV In 1:   Root pitch 1V/oct (0V = C4, summed with Knob X)
  * - Knob X:    Master tune ±12 semitones (continuous, summed with CV1)
  * - Knob Y:    Interval — root note to second note, 0 (unison) → 12 (octave) semitones
  * - CV In 2:   Timbre offset — bipolar, offsets the Main knob position
- * - Main Knob: Timbre — SAW (CCW) → TRI → SINE (centre) → TRI → SAW (CW)
+ * - Main Knob: Timbre — SINE (edges) → TRI → SAW (centre)
  * - Switch Up: detune level (CCW=10c, CW=16c)
  * - Switch Mid: detune level (CCW=0c, CW=5c)
  * - Tap Switch Down: cycle chord extensions (voices 3–6) for current interval
+ * - Hold Switch Down (1s): store current chord to sequencer
+ * - Pulse In 1: advance chord extension preset
+ * - Pulse In 2: recall next stored chord (arm guard: must see PU2 low first)
  *
  * Outputs:
  * - Audio Out 1: 6-voice mix
@@ -23,9 +26,10 @@
  * - Voice 2: always root + Y interval
  * - Voices 3–6: chord extensions, cycled by tapping switch Down or Pulse In 1
  *
- * LEDs:
- * - LEDs 0–4: interval indicator (maps 0–12 semitones across 5 LEDs)
- * - LED 5:    extension preset index (dim = preset 0, bright = preset 5)
+ * LEDs (three modes):
+ * - Storing:      LEDs 1,3,5 full bright; LEDs 0,2,4 = slot number in binary
+ * - Chord held:   LEDs 0,2,4 full bright; LEDs 1,3,5 = recalled slot in binary
+ * - Normal:       LEDs 0–4 interval indicator; LED 5 preset brightness
  */
 
 #include "ComputerCard.h"
@@ -42,16 +46,13 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-constexpr int32_t  kCountsPerOctave  = 341;
-constexpr int32_t  kMaxChords        = 8;
-constexpr uint32_t kHoldSamples      = 48000;
-constexpr int32_t kNumVoices        = 6;
-constexpr int32_t kNumIntervals     = 13;   // 0..12 semitones
-constexpr int32_t kNumPresets       = 6;    // extension presets per interval
-constexpr int32_t kAmpPerVoice      = 10;   // out of 256; sum of 6 voices >> 2 stays in ±2047
-// Per-voice phase offsets for Out2 — each voice offset by a different amount
-// so the two outputs have genuinely different phase content. Spread across ~90°.
-// Voice i gets i * 1/24 cycle offset (0, 15, 30, 45, 60, 75 degrees).
+constexpr int32_t  kCountsPerOctave = 341;
+constexpr int32_t  kMaxChords       = 8;
+constexpr uint32_t kHoldSamples     = 48000;  // 1 second at 48kHz
+constexpr int32_t  kNumVoices       = 6;
+constexpr int32_t  kNumIntervals    = 13;   // 0..12 semitones
+constexpr int32_t  kNumPresets      = 6;    // extension presets per interval
+constexpr int32_t  kAmpPerVoice     = 10;   // out of 256; sum of 6 voices >> 2 stays in ±2047
 constexpr uint32_t kStereoOffsets[6] = {
     0x00000000u,  // voice 0:  0°
     0x0AAAAAA0u,  // voice 1: 15°
@@ -155,153 +156,117 @@ constexpr uint32_t MIDI_PHASE_INC[128] = {
 // Chord extension table
 // kExtensions[interval][preset][voice_ext_index] — semitone offsets above root
 // for voices 2–5 (indices 0..3 here). Voice 0 = root (0), Voice 1 = root+interval.
-// Presets cycle through harmonic options for each two-note interval.
 // ---------------------------------------------------------------------------
 
-// interval 0: unison — build upward with 5ths and octaves
 constexpr int8_t kExt_0[6][4] = {
-    {  7, 12, 19, 24 },  // root + 5th + oct + 5th+oct
-    { 12, 19, 24, 31 },  // octave stack
-    {  7, 12, 24, 31 },  // open 5ths
-    {  7, 19, 24, 36 },  // spread 5ths
-    { 12, 24, 36, 48 },  // octave stack wide
-    {  5,  7, 12, 17 },  // sus cluster
+    {  7, 12, 19, 24 },
+    { 12, 19, 24, 31 },
+    {  7, 12, 24, 31 },
+    {  7, 19, 24, 36 },
+    { 12, 24, 36, 48 },
+    {  5,  7, 12, 17 },
 };
-
-// interval 1: minor 2nd — dissonant, use spread to open it up
 constexpr int8_t kExt_1[6][4] = {
-    { 12, 13, 24, 25 },  // octave doubling of the cluster
-    {  7, 12, 19, 24 },  // add 5ths — opens it up
-    { 12, 19, 24, 25 },  // 5th + oct + top crunch
-    {  7, 13, 19, 24 },  // 5th framing the m2
-    { 12, 24, 25, 36 },  // wide with top crunch
-    {  1,  7, 12, 13 },  // cluster below and above
+    { 12, 13, 24, 25 },
+    {  7, 12, 19, 24 },
+    { 12, 19, 24, 25 },
+    {  7, 13, 19, 24 },
+    { 12, 24, 25, 36 },
+    {  1,  7, 12, 13 },
 };
-
-// interval 2: major 2nd — sus2 family
 constexpr int8_t kExt_2[6][4] = {
-    {  7, 12, 14, 19 },  // sus2 with 5th
-    {  7, 14, 19, 24 },  // open sus2
-    {  2,  7, 12, 14 },  // add below
-    { 14, 19, 21, 26 },  // 9th chord upper structure
-    {  7, 12, 21, 26 },  // 9th with 5th
-    {  2, 14, 19, 26 },  // stacked 9ths
+    {  7, 12, 14, 19 },
+    {  7, 14, 19, 24 },
+    {  2,  7, 12, 14 },
+    { 14, 19, 21, 26 },
+    {  7, 12, 21, 26 },
+    {  2, 14, 19, 26 },
 };
-
-// interval 3: minor 3rd — minor chords
 constexpr int8_t kExt_3[6][4] = {
-    {  7, 12, 19, 24 },  // minor triad + oct
-    {  7, 10, 12, 19 },  // min7
-    {  7, 12, 15, 19 },  // min add11 / quartal
-    {  3,  7, 10, 12 },  // min7 close
-    {  7, 12, 19, 22 },  // min7 open
-    {  7, 15, 19, 24 },  // min11
+    {  7, 12, 19, 24 },
+    {  7, 10, 12, 19 },
+    {  7, 12, 15, 19 },
+    {  3,  7, 10, 12 },
+    {  7, 12, 19, 22 },
+    {  7, 15, 19, 24 },
 };
-
-// interval 4: major 3rd — major chords
 constexpr int8_t kExt_4[6][4] = {
-    {  7, 12, 16, 19 },  // major triad + oct
-    {  7, 11, 12, 16 },  // maj7
-    {  4,  7, 12, 16 },  // major triad doubling
-    {  7, 11, 16, 19 },  // maj7 open
-    {  4, 12, 16, 19 },  // add9
-    {  7, 14, 16, 19 },  // maj9
+    {  7, 12, 16, 19 },
+    {  7, 11, 12, 16 },
+    {  4,  7, 12, 16 },
+    {  7, 11, 16, 19 },
+    {  4, 12, 16, 19 },
+    {  7, 14, 16, 19 },
 };
-
-// interval 5: perfect 4th — sus4 / quartal
 constexpr int8_t kExt_5[6][4] = {
-    {  7, 12, 17, 19 },  // sus4 with 5th
-    {  5,  7, 12, 17 },  // quartal
-    {  7, 12, 17, 24 },  // sus4 open
-    {  5, 12, 17, 22 },  // quartal stack
-    {  7, 17, 19, 24 },  // sus4 spread
-    {  5,  7, 17, 24 },  // wide quartal
+    {  7, 12, 17, 19 },
+    {  5,  7, 12, 17 },
+    {  7, 12, 17, 24 },
+    {  5, 12, 17, 22 },
+    {  7, 17, 19, 24 },
+    {  5,  7, 17, 24 },
 };
-
-// interval 6: tritone — augmented / diminished
 constexpr int8_t kExt_6[6][4] = {
-    {  3,  6,  9, 12 },  // diminished 7th
-    {  6,  9, 12, 15 },  // dim7 inversion
-    {  6, 12, 18, 24 },  // tritone stack
-    {  4,  6, 10, 12 },  // dom7b5
-    {  6, 12, 15, 18 },  // dim + oct
-    {  3,  6, 12, 15 },  // half-dim
+    {  3,  6,  9, 12 },
+    {  6,  9, 12, 15 },
+    {  6, 12, 18, 24 },
+    {  4,  6, 10, 12 },
+    {  6, 12, 15, 18 },
+    {  3,  6, 12, 15 },
 };
-
-// interval 7: perfect 5th — power / major / modal
 constexpr int8_t kExt_7[6][4] = {
-    { 12, 19, 24, 31 },  // power chord wide
-    {  4,  7, 12, 16 },  // major triad
-    {  7, 11, 12, 19 },  // dom7
-    {  7, 12, 14, 19 },  // add9
-    {  4,  7, 16, 19 },  // major spread
-    {  3,  7, 10, 12 },  // min7 on root
+    { 12, 19, 24, 31 },
+    {  4,  7, 12, 16 },
+    {  7, 11, 12, 19 },
+    {  7, 12, 14, 19 },
+    {  4,  7, 16, 19 },
+    {  3,  7, 10, 12 },
 };
-
-// interval 8: minor 6th — minor inversions / augmented
 constexpr int8_t kExt_8[6][4] = {
-    {  3,  7, 12, 15 },  // minor + 5th
-    {  4,  8, 12, 15 },  // augmented
-    {  8, 12, 15, 20 },  // aug inversion
-    {  7, 12, 15, 19 },  // min add11
-    {  3,  8, 15, 20 },  // aug / dim spread
-    {  8, 15, 19, 24 },  // wide aug
+    {  3,  7, 12, 15 },
+    {  4,  8, 12, 15 },
+    {  8, 12, 15, 20 },
+    {  7, 12, 15, 19 },
+    {  3,  8, 15, 20 },
+    {  8, 15, 19, 24 },
 };
-
-// interval 9: major 6th — 6th chords / major
 constexpr int8_t kExt_9[6][4] = {
-    {  4,  7, 12, 16 },  // major triad
-    {  4,  7,  9, 16 },  // maj6
-    {  7,  9, 12, 16 },  // maj6 open
-    {  4,  9, 16, 21 },  // 6/9
-    {  7, 12, 16, 21 },  // maj6 wide
-    {  2,  4,  9, 16 },  // add9/6
+    {  4,  7, 12, 16 },
+    {  4,  7,  9, 16 },
+    {  7,  9, 12, 16 },
+    {  4,  9, 16, 21 },
+    {  7, 12, 16, 21 },
+    {  2,  4,  9, 16 },
 };
-
-// interval 10: minor 7th — dominant 7th / blues
 constexpr int8_t kExt_10[6][4] = {
-    {  4,  7, 12, 16 },  // dom7 (major triad + min7)
-    {  4,  7, 10, 14 },  // dom9
-    {  2,  4,  7, 10 },  // dom9 close
-    {  7, 10, 12, 19 },  // dom7 open
-    {  4, 10, 12, 16 },  // dom7 alt
-    {  6,  7, 10, 13 },  // dom7b5b9 — altered
+    {  4,  7, 12, 16 },
+    {  4,  7, 10, 14 },
+    {  2,  4,  7, 10 },
+    {  7, 10, 12, 19 },
+    {  4, 10, 12, 16 },
+    {  6,  7, 10, 13 },
 };
-
-// interval 11: major 7th — maj7 / lydian
 constexpr int8_t kExt_11[6][4] = {
-    {  4,  7, 12, 16 },  // maj7 (add 5th + 3rd)
-    {  4,  7, 11, 16 },  // maj7 close
-    {  7, 11, 12, 16 },  // maj7 open
-    {  2,  4,  7, 11 },  // maj9
-    {  4, 11, 16, 18 },  // maj7#11 (lydian)
-    {  6, 11, 16, 18 },  // lydian spread
+    {  4,  7, 12, 16 },
+    {  4,  7, 11, 16 },
+    {  7, 11, 12, 16 },
+    {  2,  4,  7, 11 },
+    {  4, 11, 16, 18 },
+    {  6, 11, 16, 18 },
 };
-
-// interval 12: octave — octave stacks / power
 constexpr int8_t kExt_12[6][4] = {
-    {  7, 12, 19, 24 },  // add 5ths
-    { 12, 19, 24, 31 },  // octave + 5th stack
-    {  7, 19, 24, 36 },  // wide open 5ths
-    { 12, 24, 31, 36 },  // oct stack with 5th
-    {  4,  7, 12, 16 },  // major triad
-    {  5,  7, 12, 17 },  // sus/quartal
+    {  7, 12, 19, 24 },
+    { 12, 19, 24, 31 },
+    {  7, 19, 24, 36 },
+    { 12, 24, 31, 36 },
+    {  4,  7, 12, 16 },
+    {  5,  7, 12, 17 },
 };
 
-// Pointer table — index by interval
 constexpr const int8_t* kExtensions[13] = {
-    &kExt_0[0][0],
-    &kExt_1[0][0],
-    &kExt_2[0][0],
-    &kExt_3[0][0],
-    &kExt_4[0][0],
-    &kExt_5[0][0],
-    &kExt_6[0][0],
-    &kExt_7[0][0],
-    &kExt_8[0][0],
-    &kExt_9[0][0],
-    &kExt_10[0][0],
-    &kExt_11[0][0],
+    &kExt_0[0][0],  &kExt_1[0][0],  &kExt_2[0][0],  &kExt_3[0][0],
+    &kExt_4[0][0],  &kExt_5[0][0],  &kExt_6[0][0],  &kExt_7[0][0],
+    &kExt_8[0][0],  &kExt_9[0][0],  &kExt_10[0][0], &kExt_11[0][0],
     &kExt_12[0][0],
 };
 
@@ -320,67 +285,58 @@ protected:
 
 private:
     // Oscillator state
-    uint32_t phase[kNumVoices]          = {};
-    uint32_t phaseIncBase[kNumVoices]   = {};
+    uint32_t phase[kNumVoices]        = {};
+    uint32_t phaseIncBase[kNumVoices] = {};
 
     // Control state
-    // Chord shape: all voices computed relative to MIDI 60, stored in phaseIncBase[].
-    // Tuning: a single Q16.16 ratio (X+CV1) multiplied onto every phaseIncBase[] uniformly.
-    uint32_t tuningRatio     = 65536;  // Q16.16, 1.0 = MIDI 60
-    uint32_t prevTuningRatio = 65536;
-    int32_t  intervalSemi    = 0;    // integer semitone 0..12, Y knob
+    uint32_t tuningRatio      = 65536;
+    uint32_t prevTuningRatio  = 65536;
+    int32_t  intervalSemi     = 0;
     int32_t  prevIntervalSemi = 0;
-    int32_t  preset          = 0;    // 0..5, which extension voicing
-    int32_t  prevPreset      = -1;   // force initial compute
+    int32_t  preset           = 0;
+    int32_t  prevPreset       = -1;
 
-    // Control smoothing accumulators
+    // Control smoothing (τ≈64 samples — rejects single ADC glitches)
     int32_t  knobXSmoothed    = 2048;
     int32_t  knobYSmoothed    = 2048;
     int32_t  cv1Smoothed      = 0;
     int32_t  cv2Smoothed      = 0;
     int32_t  mainKnobSmoothed = 2048;
 
-    // Tuning cache — skip 64-bit division when knob/CV unchanged
-    int32_t  prevTuneQ10      = INT32_MIN;
+    // Tuning cache
+    int32_t  prevTuneQ10  = INT32_MIN;
 
-    // Startup holdoff — knob IIR in ComputerCard starts at 0 and takes ~2000 samples
-    // to settle to the real knob position. Skip control updates until then.
+    // Startup holdoff (9600 samples = ~200ms)
     uint32_t startupCount = 0;
+    uint32_t fadeCount    = 0;
 
     // Switch state
-    bool     downArmed    = true;
+    bool     downArmed = true;
 
     // Pulse Out 2 PWM LFO
-    uint32_t pwmPhase     = 0;
+    uint32_t pwmPhase = 0;
 
     // Chord sequencer
-    struct ChordState {
-        uint32_t tuningRatio;
-        int32_t  intervalSemi;
-        int32_t  preset;
-    };
+    struct ChordState { uint32_t tuningRatio; int32_t intervalSemi; int32_t preset; };
     ChordState chordSeq[kMaxChords] = {};
     int32_t    chordCount    = 0;
     int32_t    chordWriteIdx = 0;
     int32_t    chordPlayIdx  = 0;
 
-    // Override state (set when a chord is recalled via PulseIn2)
-    bool       chordOverride      = false;
-    uint32_t   overrideTuning     = 65536;  // recalled chord's tuning
-    int32_t    overrideInterval   = 0;      // recalled chord's interval
-    int32_t    overridePreset     = 0;      // recalled chord's preset
-    int32_t    overrideSlot       = 0;      // slot index just recalled (for LED display)
-    uint32_t   overrideBaseTuning = 65536;  // X/CV1 voltage at moment of recall
-    int32_t    overrideBaseInterval = 0;    // Y voltage at moment of recall (semitones)
+    // Override state (chord recalled via PulseIn2)
+    bool       chordOverride        = false;
+    uint32_t   overrideTuning       = 65536;
+    int32_t    overrideInterval     = 0;
+    int32_t    overridePreset       = 0;
+    int32_t    overrideSlot         = 0;
+    uint32_t   overrideBaseTuning   = 65536;
+    int32_t    overrideBaseInterval = 0;
 
-    // Hold detection — switch
-    bool       holdArmed   = false;
-    uint32_t   holdTimer   = 0;
+    // Hold detection
+    uint32_t   holdTimer        = 0;
+    int32_t    pendingStoreSlot = -1;
 
-    // Chord store state — tracks pending store slot for LED feedback
-    int32_t    pendingStoreSlot = -1;  // slot being stored into (-1 = none)
-
-    // PulseIn2 arm guard — stays false until PU2 seen low (prevents boot glitch)
+    // PulseIn2 arm guard — prevents false trigger at boot
     bool       pu2Armed = false;
 
     void updateTargets();
@@ -397,7 +353,7 @@ private:
 
 inline int32_t ChorganCard::sineSample(uint32_t ph) {
     uint32_t index = ph >> 23;
-    int32_t  frac  = (int32_t)((ph >> 13) & 0x3FFu);  // 0..1023, keeps muls in 32-bit
+    int32_t  frac  = (int32_t)((ph >> 13) & 0x3FFu);
     int32_t s1 = SINE_TABLE[index & 0x1FFu];
     int32_t s2 = SINE_TABLE[(index + 1u) & 0x1FFu];
     return s1 + ((s2 - s1) * frac >> 10);
@@ -417,14 +373,13 @@ inline int32_t ChorganCard::sawSample(uint32_t ph) {
 }
 
 inline int32_t ChorganCard::blendWaveform(uint32_t ph, int32_t shape) {
-    // shape 0..4095, centre (2048) = pure SAW, fully CCW or CW = pure SINE.
-    // Fold into distance from centre (0=centre/SAW, 2047=edge/SINE), then invert.
-    // Zones: 0..511 = SINE→TRI (512 wide), 512..2047 = TRI→SAW (1536 wide)
+    // shape 0..4095, centre (2048) = pure SAW, edges (0 or 4095) = pure SINE.
+    // Fold into distance from centre, invert: s=0 at edge (SINE), s=2047 at centre (SAW).
+    // Inner zone (s < 512): SINE→TRI. Outer zone (s >= 512): TRI→SAW.
     int32_t d = shape - 2048;
     if (d < 0) d = -d;
     if (d > 2047) d = 2047;
-    int32_t s = 2047 - d;  // 0 = edge (SINE), 2047 = centre (SAW)
-
+    int32_t s = 2047 - d;
     if (s < 512) {
         const int32_t t = s * 2;
         const int32_t a = sineSample(ph);
@@ -457,17 +412,13 @@ inline uint32_t ChorganCard::phaseIncFrac(int note_lo, int note_hi, int32_t frac
 // ---------------------------------------------------------------------------
 
 void ChorganCard::updateTargets() {
-    // Step 1: compute chord shape relative to MIDI 60 (no tuning applied yet).
     phaseIncBase[0] = MIDI_PHASE_INC[60];
     phaseIncBase[1] = MIDI_PHASE_INC[60 + intervalSemi];
-
     const int8_t* ext = kExtensions[intervalSemi] + preset * 4;
     for (int i = 0; i < 4; i++) {
         int32_t n = 60 + (int32_t)ext[i];
         phaseIncBase[2 + i] = phaseIncFrac(n, n + 1, 0);
     }
-
-    // Step 2: apply tuning ratio uniformly to all voices.
     for (int i = 0; i < kNumVoices; i++) {
         phaseIncBase[i] = (uint32_t)((uint64_t)phaseIncBase[i] * tuningRatio >> 16);
     }
@@ -479,41 +430,33 @@ void ChorganCard::updateTargets() {
 
 void ChorganCard::ProcessSample() {
     // 1. Read controls
-    int32_t mainKnob = KnobVal(Knob::Main);
-    int32_t knobX    = KnobVal(Knob::X);
-    int32_t knobY    = KnobVal(Knob::Y);
-    int32_t cv1      = CVIn1();
-    int32_t cv2      = CVIn2();
+    int32_t rawMain = KnobVal(Knob::Main);
+    int32_t rawX    = KnobVal(Knob::X);
+    int32_t rawY    = KnobVal(Knob::Y);
+    int32_t cv1     = CVIn1();
+    int32_t cv2     = CVIn2();
 
-    // 2. Smooth controls
-    mainKnobSmoothed += (mainKnob - mainKnobSmoothed) >> 5;
-    knobXSmoothed    += (knobX    - knobXSmoothed)    >> 5;
-    knobYSmoothed    += (knobY    - knobYSmoothed)    >> 5;
-    cv1Smoothed      += (cv1      - cv1Smoothed)      >> 5;
-    cv2Smoothed      += (cv2      - cv2Smoothed)      >> 5;
+    // 2. Smooth controls — run every sample so smoothers are fully converged
+    // before we act on values. τ≈64 samples rejects single ADC glitches.
+    mainKnobSmoothed += (rawMain - mainKnobSmoothed) >> 6;
+    knobXSmoothed    += (rawX    - knobXSmoothed)    >> 6;
+    knobYSmoothed    += (rawY    - knobYSmoothed)    >> 6;
+    cv1Smoothed      += (cv1     - cv1Smoothed)      >> 6;
+    cv2Smoothed      += (cv2     - cv2Smoothed)      >> 6;
 
-    // Startup holdoff: ComputerCard's knob IIR (127/128 per sample) starts at 0.
-    // Let it run for 4800 samples (~100ms) before we act on knob values — by then
-    // the IIR has converged to >97% of the true value. We run our own IIR normally
-    // during this time so our smoothers also converge, but we don't update targets
-    // or produce audio until the holdoff expires.
-    // Also re-enters holdoff if a mux glitch drives all knob smoothers near-zero
-    // simultaneously — physically impossible unless all three knobs are hard CCW.
-    if (mainKnobSmoothed < 50 && knobXSmoothed < 50 && knobYSmoothed < 50) {
-        startupCount = 0;
-        prevTuneQ10  = INT32_MIN;
-    }
-    if (startupCount < 4800) {
+    // Startup holdoff: wait for ComputerCard knob IIR to fully converge (~4200 samples).
+    // 9600 samples (~200ms) gives comfortable margin.
+    if (startupCount < 9600) {
         startupCount++;
         return;
     }
 
-    // CV2 offsets timbre (main knob) bipolarly.
+    // 3. CV2 offsets timbre (main knob) bipolarly
     int32_t timbre = mainKnobSmoothed + cv2Smoothed;
     if (timbre < 0)    timbre = 0;
     if (timbre > 4095) timbre = 4095;
 
-    // 3. Tuning: CV1 + KnobX as Q10 semitone offset from MIDI 60.
+    // 4. Tuning: CV1 + KnobX as Q10 semitone offset from MIDI 60
     int32_t tuneQ10 = (cv1Smoothed * 12288) / kCountsPerOctave
                     + (knobXSmoothed - 2048) * 6;
     if (tuneQ10 < -60 * 1024) tuneQ10 = -60 * 1024;
@@ -521,27 +464,26 @@ void ChorganCard::ProcessSample() {
     uint32_t newTuningRatio = tuningRatio;
     if (tuneQ10 != prevTuneQ10) {
         prevTuneQ10 = tuneQ10;
-        int32_t  tuneNote = 60 + (tuneQ10 >> 10);
-        int32_t  tuneFrac = tuneQ10 & 0x3FF;
+        int32_t tuneNote = 60 + (tuneQ10 >> 10);
+        int32_t tuneFrac = tuneQ10 & 0x3FF;
         if (tuneQ10 < 0) { tuneNote = 60 + (tuneQ10 >> 10) - 1; tuneFrac = (1024 + (tuneQ10 & 0x3FF)) & 0x3FF; }
-        uint32_t rootInc  = phaseIncFrac(tuneNote, tuneNote + 1, tuneFrac);
+        uint32_t rootInc = phaseIncFrac(tuneNote, tuneNote + 1, tuneFrac);
         newTuningRatio = (uint32_t)(((uint64_t)rootInc << 16) / MIDI_PHASE_INC[60]);
     }
 
-    // 4. Interval: Knob Y only, discrete semitone steps.
+    // 5. Interval: Knob Y only
     int32_t intervalRaw = knobYSmoothed;
     if (intervalRaw < 0)    intervalRaw = 0;
     if (intervalRaw > 4095) intervalRaw = 4095;
     int32_t newIntervalSemi = (intervalRaw * 13) >> 12;
     if (newIntervalSemi > 12) newIntervalSemi = 12;
 
-    // 5. Switch: short tap (< 1s) advances preset; hold (>= 1s) stores chord.
+    // 6. Switch: short tap advances preset; hold ≥1s stores chord
     Switch sw = SwitchVal();
     if (sw == Switch::Down) {
         holdTimer++;
-        if (holdTimer == kHoldSamples && downArmed) {
+        if (holdTimer == kHoldSamples && downArmed)
             pendingStoreSlot = chordWriteIdx;
-        }
     } else {
         if (holdTimer > 0 && downArmed) {
             if (pendingStoreSlot >= 0) {
@@ -550,9 +492,8 @@ void ChorganCard::ProcessSample() {
                 if (chordCount < kMaxChords) chordCount++;
                 pendingStoreSlot = -1;
             } else {
-                // Short tap — advance preset; does NOT break chord override
                 preset = (preset + 1) % kNumPresets;
-                overridePreset = preset;  // sync so override block doesn't overwrite it
+                overridePreset = preset;
             }
             downArmed = false;
         }
@@ -560,13 +501,13 @@ void ChorganCard::ProcessSample() {
         holdTimer = 0;
     }
 
-    // 5b. PulseIn1: rising edge advances preset; does NOT break chord override.
+    // 6b. PulseIn1: advance preset (syncs overridePreset so override doesn't overwrite it)
     if (PulseIn1RisingEdge()) {
         preset = (preset + 1) % kNumPresets;
-        overridePreset = preset;  // sync so override block doesn't overwrite it
+        overridePreset = preset;
     }
 
-    // 5c. PulseIn2: arm once seen low, then on rising edge recall next chord.
+    // 6c. PulseIn2: arm guard then recall next chord on rising edge
     if (!PulseIn2()) pu2Armed = true;
     if (pu2Armed && PulseIn2RisingEdge() && chordCount > 0) {
         int32_t idx      = chordPlayIdx % chordCount;
@@ -574,30 +515,26 @@ void ChorganCard::ProcessSample() {
         overrideInterval = chordSeq[idx].intervalSemi;
         overridePreset   = chordSeq[idx].preset;
         overrideSlot     = idx;
-        // Latch the physical knob/CV positions NOW as the break baseline
         overrideBaseTuning   = newTuningRatio;
         overrideBaseInterval = newIntervalSemi;
-        chordOverride        = true;
-        chordPlayIdx         = (chordPlayIdx + 1) % chordCount;
+        chordOverride    = true;
+        chordPlayIdx     = (chordPlayIdx + 1) % chordCount;
     }
 
-    // 5d. Override: substitute recalled chord. Break when physical controls move >1 semitone from baseline.
+    // 6d. Override: substitute recalled chord; break when physical controls move >1 semitone
     if (chordOverride) {
         int32_t tuningDiff = (int32_t)newTuningRatio - (int32_t)overrideBaseTuning;
         if (tuningDiff < 0) tuningDiff = -tuningDiff;
-        // 1 semitone in Q16.16 ratio ≈ 3898 units
         if (tuningDiff > 3898 || newIntervalSemi != overrideBaseInterval) {
             chordOverride = false;
         } else {
             newTuningRatio  = overrideTuning;
             newIntervalSemi = overrideInterval;
-            if (preset != overridePreset) {
-                preset = overridePreset;
-            }
+            if (preset != overridePreset) preset = overridePreset;
         }
     }
 
-    // 6. Update targets if anything changed
+    // 7. Update targets if anything changed
     bool changed = false;
     if (newTuningRatio != prevTuningRatio) {
         tuningRatio     = newTuningRatio;
@@ -615,7 +552,7 @@ void ChorganCard::ProcessSample() {
     }
     if (changed) updateTargets();
 
-    // 7. Oscillator loop — 6 voices
+    // 8. Oscillator loop — 6 voices
     bool knobCW = (mainKnobSmoothed >= 2048);
     int32_t detuneAmt;
     if (sw == Switch::Up) {
@@ -639,23 +576,30 @@ void ChorganCard::ProcessSample() {
     if (mix2 >  2047) mix2 =  2047;
     if (mix2 < -2048) mix2 = -2048;
 
+    // Fade in over 480 samples (~10ms) after holdoff ends
+    if (fadeCount < 480) {
+        mix1 = (mix1 * (int32_t)fadeCount) / 480;
+        mix2 = (mix2 * (int32_t)fadeCount) / 480;
+        fadeCount++;
+    }
+
     AudioOut1((int16_t)mix1);
     AudioOut2((int16_t)mix2);
 
-    // 8. Pulse outputs
+    // 9. Pulse outputs
     PulseOut1(phase[0] & 0x40000000u);
 
     pwmPhase += (uint32_t)(detuneAmt * 900);
-    uint32_t pwmTop  = pwmPhase >> 17;
-    int32_t  pwmTri  = (pwmTop < 16384)
-                     ? (int32_t)pwmTop
-                     : (int32_t)(32767 - (pwmTop - 16384));
+    uint32_t pwmTop = pwmPhase >> 17;
+    int32_t  pwmTri = (pwmTop < 16384)
+                    ? (int32_t)pwmTop
+                    : (int32_t)(32767 - (pwmTop - 16384));
     uint32_t duty = 0x4CCCCCCC + (uint32_t)(pwmTri * 0x199A);
     PulseOut2((phase[0] >> 1) < duty);
 
-    // 9. LEDs
+    // 10. LEDs
     if (pendingStoreSlot >= 0) {
-        // Storing: LEDs 1,3,5 full bright; LEDs 0,2,4 = slot index in binary
+        // Storing: LEDs 1,3,5 full bright; LEDs 0,2,4 = slot number in binary
         LedBrightness(0, (pendingStoreSlot & 1) ? 4095 : 0);
         LedBrightness(1, 4095);
         LedBrightness(2, (pendingStoreSlot & 2) ? 4095 : 0);
@@ -663,7 +607,7 @@ void ChorganCard::ProcessSample() {
         LedBrightness(4, (pendingStoreSlot & 4) ? 4095 : 0);
         LedBrightness(5, 4095);
     } else if (chordOverride) {
-        // Chord held: LEDs 0,2,4 solid; LEDs 1,3,5 = overrideSlot in binary
+        // Chord held: LEDs 0,2,4 full bright; LEDs 1,3,5 = recalled slot in binary
         LedBrightness(0, 4095);
         LedBrightness(1, (overrideSlot & 1) ? 4095 : 0);
         LedBrightness(2, 4095);
@@ -672,12 +616,10 @@ void ChorganCard::ProcessSample() {
         LedBrightness(5, (overrideSlot & 4) ? 4095 : 0);
     } else {
         // Normal: interval indicator + preset level
-        int32_t displayInterval = chordOverride ? overrideInterval : intervalSemi;
-        int32_t displayPreset   = chordOverride ? overridePreset   : preset;
-        int32_t ledPos = (displayInterval * 4 + 6) / 12;
+        int32_t ledPos = (intervalSemi * 4 + 6) / 12;
         if (ledPos > 4) ledPos = 4;
         for (int z = 0; z < 5; z++) LedOn(z, ledPos == z);
-        LedBrightness(5, (displayPreset * 4095) / (kNumPresets - 1));
+        LedBrightness(5, (preset * 4095) / (kNumPresets - 1));
     }
 }
 
