@@ -405,7 +405,7 @@ private:
 	uint16_t ADC_Buffer[2][8];
 	uint16_t SPI_Buffer[2][2];
 
-	uint8_t adc_dma, spi_dma; // DMA ids
+	uint8_t adc_dma, adc_dma_b, spi_dma; // DMA ids (adc_dma/adc_dma_b chained ping-pong)
 
 
 
@@ -546,26 +546,36 @@ void __not_in_flash_func(ComputerCard::AudioWorker)()
 	adc_set_clkdiv(124);
 
 	// claim and setup DMAs for reading to ADC, and writing to SPI DAC
-	adc_dma = dma_claim_unused_channel(true);
-	spi_dma = dma_claim_unused_channel(true);
+	// Two ADC DMA channels chained A→B→A to eliminate the re-arm race:
+	// hardware restarts the next channel instantly when one completes,
+	// so the ADC FIFO never accumulates stale samples between bursts.
+	adc_dma   = dma_claim_unused_channel(true);
+	adc_dma_b = dma_claim_unused_channel(true);
+	spi_dma   = dma_claim_unused_channel(true);
 
-	dma_channel_config adc_dmacfg, spi_dmacfg;
-	adc_dmacfg = dma_channel_get_default_config(adc_dma);
-	spi_dmacfg = dma_channel_get_default_config(spi_dma);
+	dma_channel_config adc_cfg_a, adc_cfg_b, spi_dmacfg;
 
-	// Reading from ADC into memory buffer, so increment on write, but no increment on read
-	channel_config_set_transfer_data_size(&adc_dmacfg, DMA_SIZE_16);
-	channel_config_set_read_increment(&adc_dmacfg, false);
-	channel_config_set_write_increment(&adc_dmacfg, true);
+	// Channel A: writes to ADC_Buffer[0], chains to B on completion
+	adc_cfg_a = dma_channel_get_default_config(adc_dma);
+	channel_config_set_transfer_data_size(&adc_cfg_a, DMA_SIZE_16);
+	channel_config_set_read_increment(&adc_cfg_a, false);
+	channel_config_set_write_increment(&adc_cfg_a, true);
+	channel_config_set_dreq(&adc_cfg_a, DREQ_ADC);
+	channel_config_set_chain_to(&adc_cfg_a, adc_dma_b);
+	dma_channel_configure(adc_dma, &adc_cfg_a, ADC_Buffer[0], &adc_hw->fifo, 8, false);
 
-	// Synchronise ADC DMA the ADC samples
-	channel_config_set_dreq(&adc_dmacfg, DREQ_ADC);
+	// Channel B: writes to ADC_Buffer[1], chains to A on completion
+	adc_cfg_b = dma_channel_get_default_config(adc_dma_b);
+	channel_config_set_transfer_data_size(&adc_cfg_b, DMA_SIZE_16);
+	channel_config_set_read_increment(&adc_cfg_b, false);
+	channel_config_set_write_increment(&adc_cfg_b, true);
+	channel_config_set_dreq(&adc_cfg_b, DREQ_ADC);
+	channel_config_set_chain_to(&adc_cfg_b, adc_dma);
+	dma_channel_configure(adc_dma_b, &adc_cfg_b, ADC_Buffer[1], &adc_hw->fifo, 8, false);
 
-	// Setup DMA for 8 ADC samples
-	dma_channel_configure(adc_dma, &adc_dmacfg, ADC_Buffer[dmaPhase], &adc_hw->fifo, 8, true);
-
-	// Turn on IRQ for ADC DMA
-	dma_channel_set_irq0_enabled(adc_dma, true);
+	// IRQ on both channels so BufferFull fires on every buffer completion
+	dma_channel_set_irq0_enabled(adc_dma,   true);
+	dma_channel_set_irq0_enabled(adc_dma_b, true);
 
 	// Call buffer_full ISR when ADC DMA finished
 	irq_set_enabled(DMA_IRQ_0, true);
@@ -592,22 +602,34 @@ void __not_in_flash_func(ComputerCard::AudioWorker)()
 	// Set up DMA to transmit 2 samples to SPI
 	dma_channel_configure(spi_dma, &spi_dmacfg, &spi_get_hw(SPI_PORT)->dr, NULL, 2, false);
 
+	// Start channel A first, then the ADC — channel B auto-starts when A completes
+	dmaPhase = 0;
+	dma_channel_start(adc_dma);
 	adc_run(true);
 
 	while (1)
 	{
-		// If ready to restart
+		// If ready to restart (e.g. called from RequestADCRestart() in ProcessSample)
 		if (runADCMode == RUN_ADC_MODE_REQUEST_ADC_RESTART)
 		{
 			runADCMode = RUN_ADC_MODE_RUNNING;
 
-			dma_hw->ints0 = 1u << adc_dma; // reset adc interrupt flag
-			dma_channel_set_write_addr(adc_dma, ADC_Buffer[dmaPhase], true); // start writing into new buffer
-			dma_channel_set_read_addr(spi_dma, SPI_Buffer[dmaPhase], true); // start reading from new buffer
+			// Clear any pending IRQ flags from both channels
+			dma_hw->ints0 = (1u << adc_dma) | (1u << adc_dma_b);
 
+			// Re-arm SPI read side
+			dma_channel_set_read_addr(spi_dma, SPI_Buffer[dmaPhase], true);
+
+			// Flush FIFO and re-sync round-robin to ch0
 			adc_set_round_robin(0);
 			adc_select_input(0);
 			adc_set_round_robin(0b0001111U);
+
+			// Reset both channel write addresses and restart from channel A
+			dma_channel_set_write_addr(adc_dma,   ADC_Buffer[0], false);
+			dma_channel_set_write_addr(adc_dma_b, ADC_Buffer[1], false);
+			dmaPhase = 0;
+			dma_channel_start(adc_dma);
 			adc_run(true);
 		}
 		else if (runADCMode == RUN_ADC_MODE_ADC_STOPPED)
@@ -644,8 +666,10 @@ void __not_in_flash_func(ComputerCard::BufferFull)()
 	static int norm_probe_count = 0;
 
 	// Internal variables for IIR filters on knobs/cv
-	static volatile int32_t knobssm[4] = { 0, 0, 0, 0 };
-	static volatile int32_t cvsm[2] = { 0, 0 };
+	// Initialised to mid-scale (32768 = knobs[x]>>4 of 2048) so IIR converges from centre,
+	// not from zero — eliminates the worst-case cold-start transient.
+	static volatile int32_t knobssm[4] = { 32768, 32768, 32768, 32768 };
+	static volatile int32_t cvsm[2] = { 32768, 32768 };  // cv = 2048 - cvsm>>4 = 0V
 	__attribute__((unused)) static int np = 0, np1 = 0, np2 = 0;
 
 	// Advance external mux to next state
@@ -653,13 +677,24 @@ void __not_in_flash_func(ComputerCard::BufferFull)()
 	gpio_put(MX_A, next_mux_state & 1);
 	gpio_put(MX_B, next_mux_state & 2);
 
-	// Set up new writes into next buffer
+	// Determine which buffer just completed and advance the ping-pong tracker
 	uint8_t cpuPhase = dmaPhase;
 	dmaPhase = 1 - dmaPhase;
 
-	dma_hw->ints0 = 1u << adc_dma; // reset adc interrupt flag
-	dma_channel_set_write_addr(adc_dma, ADC_Buffer[dmaPhase], true); // start writing into new buffer
-	dma_channel_set_read_addr(spi_dma, SPI_Buffer[dmaPhase], true); // start reading from new buffer
+	// Clear IRQ flags for both chained channels (either may have fired)
+	dma_hw->ints0 = (1u << adc_dma) | (1u << adc_dma_b);
+
+	// Re-arm the write address for the channel that just finished so it's ready
+	// when the chain returns to it (~8 ADC conversions / ~21µs from now).
+	// Do NOT start it — the chain will trigger it automatically.
+	if (cpuPhase == 0)
+		dma_channel_set_write_addr(adc_dma,   ADC_Buffer[0], false);
+	else
+		dma_channel_set_write_addr(adc_dma_b, ADC_Buffer[1], false);
+
+	// Kick off the SPI DAC output (reads from dmaPhase = the buffer being written next,
+	// matching original one-sample pipeline behaviour)
+	dma_channel_set_read_addr(spi_dma, SPI_Buffer[dmaPhase], true);
 
 	////////////////////////////////////////
 	// Collect various inputs and put them in variables for the DSP
@@ -771,8 +806,9 @@ void __not_in_flash_func(ComputerCard::BufferFull)()
 		adc_set_round_robin(0);
 		adc_select_input(0);
 
-		dma_hw->ints0 = 1u << adc_dma; // reset adc interrupt flag
+		dma_hw->ints0 = (1u << adc_dma) | (1u << adc_dma_b); // reset adc interrupt flags
 		dma_channel_cleanup(adc_dma);
+		dma_channel_cleanup(adc_dma_b);
 		dma_channel_cleanup(spi_dma);
 		irq_set_enabled(DMA_IRQ_0, false);
 		irq_remove_handler(DMA_IRQ_0, ComputerCard::AudioCallback);

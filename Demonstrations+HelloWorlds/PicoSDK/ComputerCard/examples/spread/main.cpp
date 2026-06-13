@@ -478,21 +478,11 @@ void SpreadCard::ProcessSample() {
         return;
     }
 
-    // 3. Freeze guard: if all three raw knob values simultaneously read near-zero while
-    // the switch reads Down, the ADC round-robin has mis-aligned (DMA gap / FIFO overrun).
-    // After 4800 samples (~100ms) still frozen, trigger a clean ADC restart via the
-    // framework's existing restart path — stops ADC, flushes FIFO, re-syncs round-robin.
-    // While waiting, hold last-good knob state so audio continues at the last stable voicing.
+    // 3. Freeze guard: defensive hold in case of any residual ADC glitch.
+    // DMA chaining eliminates the structural race, but this catches any remaining edge case.
+    // Holds last-good knob state; audio continues at last stable voicing.
     if (rawMain < 30 && rawX < 30 && rawY < 30 && SwitchVal() == Switch::Down) {
         frozenSamples++;
-        if (frozenSamples == 4800) {
-            // Trigger clean ADC restart. Resets the app smoothers immediately so they
-            // converge from scratch on the first good samples after restart.
-            RequestADCRestart();
-            mainKnobSmoothed = lastGoodMainKnob;
-            knobXSmoothed    = lastGoodKnobX;
-            knobYSmoothed    = lastGoodKnobY;
-        }
     } else {
         frozenSamples    = 0;
         lastGoodMainKnob = rawMain;
