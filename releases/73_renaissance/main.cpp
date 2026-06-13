@@ -464,21 +464,21 @@ void SpreadCard::ProcessSample() {
     int32_t cv1     = CVIn1();
     int32_t cv2     = CVIn2();
 
-    // 2. Startup holdoff: ComputerCard knob IIR starts at 0, takes ~100ms to settle.
-    // Run smoothers every sample so they converge, but don't act on values until settled.
-    if (startupCount < 4800) {
-        startupCount++;
-        cv1Smoothed += (cv1 - cv1Smoothed) >> 5;
-        cv2Smoothed += (cv2 - cv2Smoothed) >> 5;
-        return;
-    }
-
-    // 3. Smooth controls
+    // 2. Smooth controls — run every sample from the start so smoothers are
+    // fully converged before we act on the values.
     mainKnobSmoothed += (rawMain - mainKnobSmoothed) >> 5;
     knobXSmoothed    += (rawX    - knobXSmoothed)    >> 5;
     knobYSmoothed    += (rawY    - knobYSmoothed)    >> 5;
     cv1Smoothed      += (cv1      - cv1Smoothed)      >> 5;
     cv2Smoothed      += (cv2      - cv2Smoothed)      >> 5;
+
+    // Startup holdoff: wait for ComputerCard knob IIR (τ≈128 samples per mux channel,
+    // ~2700 samples total) and our own smoother (τ≈32 samples) to fully converge.
+    // 9600 samples = ~200ms — comfortably covers both IIRs and any mux settling.
+    if (startupCount < 9600) {
+        startupCount++;
+        return;
+    }
 
     // CV2 offsets timbre (main knob) bipolarly. CV2 range -2048..2047 maps to ±2048 on 0..4095 scale.
     int32_t timbre = mainKnobSmoothed + cv2Smoothed;
