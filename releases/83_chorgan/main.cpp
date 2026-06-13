@@ -45,7 +45,7 @@
 constexpr int32_t  kCountsPerOctave  = 341;
 constexpr int32_t  kMaxChords        = 8;
 constexpr uint32_t kHoldSamples      = 48000;
-constexpr uint32_t kRailLockout      = 24000;  // 0.5s — knob stuck-at-rail detection
+constexpr int32_t  kKnobMaxSlew      = 200;    // max counts/sample — blocks ADC corruption jumps
 constexpr int32_t kNumVoices        = 6;
 constexpr int32_t kNumIntervals     = 13;   // 0..12 semitones
 constexpr int32_t kNumPresets       = 6;    // extension presets per interval
@@ -341,13 +341,10 @@ private:
     int32_t  cv2Smoothed      = 0;
     int32_t  mainKnobSmoothed = 2048;
 
-    // Rail-stuck guards — protect against ADC/mux corruption from fast CV/pulse inputs
-    uint32_t knobXRailCount    = 0;
-    uint32_t knobYRailCount    = 0;
-    uint32_t mainKnobRailCount = 0;
-    int32_t  knobXSafe         = 2048;
-    int32_t  knobYSafe         = 2048;
-    int32_t  mainKnobSafe      = 2048;
+    // Slew-rate limiters — protect against single-sample ADC corruption jumps
+    int32_t  knobXPrev         = 2048;
+    int32_t  knobYPrev         = 2048;
+    int32_t  mainKnobPrev      = 2048;
 
     // Switch state
     bool     downArmed    = true;
@@ -486,6 +483,15 @@ void ChorganCard::ProcessSample() {
     int32_t knobY    = KnobVal(Knob::Y);
     int32_t cv1      = CVIn1();
     int32_t cv2      = CVIn2();
+
+    // 1b. Slew-rate limiter — clamps single-sample jumps caused by ADC/mux corruption
+    // from fast CV/pulse inputs. Max 200 counts/sample = full sweep in ~20ms, faster
+    // than any real knob movement. A corruption jump of 2000+ counts gets clamped.
+    {
+        int32_t dX = knobX    - knobXPrev;    if (dX >  kKnobMaxSlew) dX =  kKnobMaxSlew; if (dX < -kKnobMaxSlew) dX = -kKnobMaxSlew; knobX    = knobXPrev    + dX; knobXPrev    = knobX;
+        int32_t dY = knobY    - knobYPrev;    if (dY >  kKnobMaxSlew) dY =  kKnobMaxSlew; if (dY < -kKnobMaxSlew) dY = -kKnobMaxSlew; knobY    = knobYPrev    + dY; knobYPrev    = knobY;
+        int32_t dM = mainKnob - mainKnobPrev; if (dM >  kKnobMaxSlew) dM =  kKnobMaxSlew; if (dM < -kKnobMaxSlew) dM = -kKnobMaxSlew; mainKnob = mainKnobPrev + dM; mainKnobPrev = mainKnob;
+    }
 
     // 2. Smooth controls
     mainKnobSmoothed += (mainKnob - mainKnobSmoothed) >> 5;
