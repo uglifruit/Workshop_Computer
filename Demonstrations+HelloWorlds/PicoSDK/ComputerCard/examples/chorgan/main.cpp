@@ -511,44 +511,29 @@ void ChorganCard::ProcessSample() {
     int32_t newIntervalSemi = (intervalRaw * 13) >> 12;
     if (newIntervalSemi > 12) newIntervalSemi = 12;
 
-    // 5. Switch: hold (>1s) stores chord, short tap advances preset.
+    // 5. Switch: short tap (< 1s) advances preset; hold (>= 1s) stores chord.
+    // Pattern mirrors original Renaissance tap, extended with a duration counter.
     Switch sw = SwitchVal();
     if (sw == Switch::Down) {
         holdTimer++;
-        if (holdTimer >= kHoldSamples && downArmed) {
-            chordSeq[chordWriteIdx] = { newTuningRatio, newIntervalSemi, preset };
-            chordWriteIdx = (chordWriteIdx + 1) % kMaxChords;
-            if (chordCount < kMaxChords) chordCount++;
+    } else {
+        if (holdTimer > 0 && downArmed) {
+            if (holdTimer < kHoldSamples) {
+                preset = (preset + 1) % kNumPresets;
+            } else {
+                chordSeq[chordWriteIdx] = { newTuningRatio, newIntervalSemi, preset };
+                chordWriteIdx = (chordWriteIdx + 1) % kMaxChords;
+                if (chordCount < kMaxChords) chordCount++;
+            }
             downArmed = false;
         }
-    } else {
-        if (holdTimer > 0 && holdTimer < kHoldSamples && downArmed) {
-            preset = (preset + 1) % kNumPresets;
-        }
         holdTimer = 0;
-        downArmed = true;
+        if (sw != Switch::Down) downArmed = true;
     }
 
-    // 5b. PulseIn1: rising edge starts hold timer; falling edge decides tap vs hold.
+    // 5b. PulseIn1: short pulse advances preset (no hold logic for now).
     if (PulseIn1RisingEdge()) {
-        pulseHoldActive = true;
-        pulseHoldTimer  = 0;
-    }
-    if (pulseHoldActive) {
-        pulseHoldTimer++;
-        if (pulseHoldTimer >= kHoldSamples) {
-            chordSeq[chordWriteIdx] = { newTuningRatio, newIntervalSemi, preset };
-            chordWriteIdx = (chordWriteIdx + 1) % kMaxChords;
-            if (chordCount < kMaxChords) chordCount++;
-            pulseHoldActive = false;
-        }
-    }
-    if (PulseIn1FallingEdge()) {
-        if (pulseHoldActive && pulseHoldTimer < kHoldSamples) {
-            preset = (preset + 1) % kNumPresets;
-        }
-        pulseHoldActive = false;
-        pulseHoldTimer  = 0;
+        preset = (preset + 1) % kNumPresets;
     }
 
     // 5c. PulseIn2: rising edge steps through stored chord sequence.
