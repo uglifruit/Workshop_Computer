@@ -406,7 +406,7 @@ inline int32_t ChorganCard::triSample(uint32_t ph) {
     if (ph < 0x40000000u)
         return (int32_t)(ph >> 15);
     else if (ph < 0xC0000000u)
-        return 32767 - (int32_t)((ph - 0x40000000u) >> 14);
+        return 32767 - (int32_t)((ph - 0x40000000u) >> 15);
     else
         return (int32_t)(ph >> 15) - 131072;
 }
