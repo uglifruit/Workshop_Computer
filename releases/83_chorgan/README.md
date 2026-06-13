@@ -163,7 +163,7 @@ Each of the 13 Y positions (0–12 semitones) has 6 extension presets. A few exa
 - Chord sequencer stores tuning ratio, interval, and preset — up to 8 chords
 - PulseIn2 arm guard: must be seen low before first rising edge is accepted (prevents boot glitch)
 - 200ms startup holdoff before audio begins — eliminates power-on glitch
-- CV Out 1: interval in semitones × 170, giving 0V at unison and ~+1V at one octave (1V/oct); always reflects the voiced interval including chord override
+- CV Out 1: interval in semitones × 34 counts/semitone (409 counts = 1V in the ±5V CVOut range), giving 0V at unison and +1V at one octave (1V/oct); always reflects the voiced interval including chord override
 - CV Out 2: the Pulse Out 2 LFO triangle (0–16383) centred and divided by 4 → ±2047 counts ≈ ±5V; zero when detuneAmt = 0
 - RAM usage: ~10.7KB (4.2% of 256KB)
 
