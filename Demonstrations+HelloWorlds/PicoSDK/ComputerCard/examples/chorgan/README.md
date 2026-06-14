@@ -171,3 +171,14 @@ Each of the 13 Y positions (0–12 semitones) has 6 extension presets to explore
 
 
 Full source: https://github.com/uglifruit/Workshop_Computer/tree/main/Demonstrations%2BHelloWorlds/PicoSDK/ComputerCard/examples/chorgan
+
+## Credits
+
+By Andy Jenkinson ([uglifruit](https://github.com/uglifruit)), developed with Claude Code.
+
+Built on the [Workshop Computer](https://github.com/TomWhitwell/Workshop_Computer) platform by Tom Whitwell, using the ComputerCard framework.
+
+Waveform morphing approach inspired in part by [Mutable Instruments Braids](https://mutable-instruments.net/modules/braids/).
+
+---
+Licensed under [Creative Commons Attribution-ShareAlike 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
