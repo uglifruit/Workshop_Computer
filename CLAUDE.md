@@ -84,6 +84,51 @@ Output `.uf2` lands in `Demonstrations+HelloWorlds/PicoSDK/ComputerCard/build/`.
 | `PulseOut1/2(bool)` | — | ~5V high, 0V low |
 | `LedOn(i, bool)` / `LedBrightness(i, val)` | — | val 0..4095 |
 
+## Hard-Won Gotchas (read before starting any new firmware)
+
+### ComputerCard.h — our fork has two critical fixes
+The shared `Demonstrations+HelloWorlds/PicoSDK/ComputerCard/ComputerCard.h` has been modified from upstream. **Do not revert these.** Both fixes must be present in any self-contained `releases/<name>/ComputerCard.h` too.
+
+**Fix 1 — ADC alignment race in `BufferFull()`**: Calling `adc_select_input(0)` while a conversion is in-progress lets that conversion complete on the old channel; the result lands as `ADC_Buffer[n][0]`, shifting the 8-slot burst by 1–3 positions. Knobs read as CV, CV reads as audio — causes intermittent freeze or wrong-channel assignments, especially under fast pulse/CV inputs. Fix: stop ADC → wait READY → drain FIFO → select ch0 → re-arm DMA → restart ADC.
+
+**Fix 2 — Power-on click in `AudioWorker()`**: `SPI_Buffer[2][2]` is uninitialised; first DMA transfer sends random RAM to DAC → audible click. Fix: pre-fill both ping-pong buffers with `dacval(0, DAC_CHANNEL_A/B)` before `adc_run(true)`.
+
+### Startup holdoff design
+- Run **all smoothers from sample 0** (not after holdoff) so they are fully converged when audio starts
+- Holdoff: **9600 samples (~200ms)** — covers ComputerCard's internal knob IIR convergence (~4200 samples) with margin
+- Smoother τ: **`>> 6` (64 samples)** — rejects single ADC glitch samples without too much lag
+- **No one-shot seed** at holdoff exit — seeding at exactly sample N is vulnerable to a rare ADC glitch at that exact sample injecting a bad value permanently
+- **480-sample linear fade-in** after holdoff ends — eliminates click from oscillators starting into a non-zero output
+
+### Switch behaviour
+- `SwitchVal()` returns `Switch::Down` (= 0) at boot before ADC settles — **always wait at least 4800 samples before reading switch for mode selection**
+- `SwitchVal()` is a **level** — it reads the current position every sample. Use a state machine (armed/timer) for tap vs hold detection
+- `PulseIn1RisingEdge()` / `PulseIn2RisingEdge()` detect **edges** (one sample true). `PulseIn1()` / `PulseIn2()` are **levels** (true while high). Use the right one — mixing them up causes missed or repeated triggers
+- **PulseIn2 boot guard**: if PU2 is high at boot, `RisingEdge()` never fires on that first edge. But if your code only watches `RisingEdge()`, a high-at-boot input will silently never arm. Add an explicit "must see low first" guard: `if (!PulseIn2()) pu2Armed = true;`
+
+### CV and audio scaling
+- `CVOut1/2` accepts −2048..2047, maps to **±5V** (not ±6V — the ±6V figure in the API table is the rail, not the useful range)
+- **1V/oct on CVOut**: 1V = ~409 counts. 1 semitone = 409/12 ≈ **34 counts**. 12 semitones = +1V = 409 counts
+- `CVIn1/2` returns −2048..2047. **0V ≈ 0** (not 2047). Above 0V = positive, below 0V = negative
+- Audio outputs clip at ±2047 — always clamp before writing
+
+### LFO / triangle wave
+- A naive triangle fold using `>> 17` (15-bit counter, fold at 16384) produces **asymmetric halves** — rising 0→16383, falling 32767→16384. Sounds like a descending ramp
+- Correct approach: `>> 16` gives a 16-bit counter (0–65535), fold at 32768, `>> 1` to scale — both halves symmetric 0→16383→0
+
+### Self-contained releases/ folder
+Every `releases/<number>_<name>/` folder intended for Tom's card listing should be **fully self-contained** (see `releases/83_chorgan/` as the reference):
+- `ComputerCard.h` — copy of **our fixed version** (not upstream's)
+- `CMakeLists.txt` — adapted from `releases/60_markov/CMakeLists.txt` (change `CARD_NAME`)
+- `pico_sdk_import.cmake` — copy verbatim from `releases/60_markov/`
+- Verify by doing a **clean build from the releases folder itself** before pushing
+
+### PR branch for Tom's repo
+- Create a branch off `origin/main` (upstream tip), not off our `main`
+- Add only `releases/<number>_<name>/` — no CMakeLists changes, no ComputerCard.h changes outside the release folder, no other firmware files
+- Single commit, clean message — no references to other firmwares or dev history
+- Branch naming convention: `add-<number>-<name>` (e.g. `add-83-chorgan`)
+
 ## Existing Firmware in This Repo
 
 ### Glitch (`examples/glitch/`) — v1.4
