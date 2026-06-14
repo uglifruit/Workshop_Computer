@@ -63,11 +63,12 @@ Output `.uf2` lands in `Demonstrations+HelloWorlds/PicoSDK/ComputerCard/build/`.
 `examples/` contains two very different things mixed together:
 
 - **Tom's reference firmwares** (e.g. `sine_wave_lookup`, `reverb`, `passthrough`) — clean, canonical, good to learn from
-- **Andy's firmwares** (`glitch/`, `spread/`, `chorgan/`, `markov/`) — may be in-progress, broken, or mid-refactor at any point
+- **Andy's stable firmwares** (`glitch/`, `chorgan/`) — finished, shipped, reflect Andy's working methodology and are fine to use as style/approach reference
+- **Andy's other firmwares** (`spread/`, `markov/`, anything else) — may be in-progress, broken, or mid-refactor; do not use as reference
 
-**Never use Andy's firmwares in `examples/` as reference implementations.** For patterns, DSP techniques, or API usage examples, use Tom's firmwares only. Andy's finished, stable code lives in `releases/<number>_<name>/` — but even there, treat it as "what we built" not "how ComputerCard works".
+**For ComputerCard API patterns and DSP techniques**, use Tom's firmwares. Tom's recommended starting points: `sine_wave_lookup` (oscillator/LUT patterns), `20_reverb` (integer DSP), `00_Simple_MIDI`.
 
-Tom's recommended starting points: `sine_wave_lookup` (oscillator/LUT patterns), `20_reverb` (integer DSP), `00_Simple_MIDI`.
+**For Andy's coding style and methodology** (state machines, smoothers, holdoff patterns, chord/sequencer logic), `glitch/` and `chorgan/` are the authoritative examples.
 
 ## ComputerCard Essentials
 
