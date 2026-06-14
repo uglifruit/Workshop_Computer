@@ -599,9 +599,13 @@ void ChorganCard::ProcessSample() {
     uint32_t duty = 0x4CCCCCCC + (uint32_t)(pwmTri * 0x199A);
     PulseOut2((phase[0] >> 1) < duty);
 
-    // CV Out 1: voiced interval — 0..12 semitones → 0V..+1V (1V/oct)
-    // CVOut range ±2047 = ±5V, so 1V = 409 counts, 1 semitone = 409/12 ≈ 34 counts
-    CVOut1((int16_t)(intervalSemi * 34));
+    // CV Out 1: root pitch (X+CV1) + voiced interval, 1V/oct
+    // tuneQ10 is semitones in Q10.10; intervalSemi is integer semitones.
+    // 1 semitone = 34 counts (409 counts = 1V in ±5V CVOut range).
+    int32_t cv1Out = (tuneQ10 * 34 >> 10) + intervalSemi * 34;
+    if (cv1Out >  2047) cv1Out =  2047;
+    if (cv1Out < -2048) cv1Out = -2048;
+    CVOut1((int16_t)cv1Out);
 
     // CV Out 2: detune-rate LFO triangle — same rate as Pulse Out 2 PWM
     // pwmTri 0..16383 → centred and scaled to -2047..+2047

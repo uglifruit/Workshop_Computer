@@ -28,7 +28,7 @@ A built-in chord sequencer stores up to eight chords and plays them back on risi
 | Audio Out 2 | Same 6 voices with per-voice phase offsets — stereo width |
 | Pulse Out 1 | Square wave one octave below root voice |
 | Pulse Out 2 | PWM square at the same frequency — duty cycle sweeps 30–70% at a rate set by detune amount |
-| CV Out 1 | Voiced interval voltage — 0V at unison, +1V at one octave (1V/oct); tracks chord override |
+| CV Out 1 | Root pitch + voiced interval (1V/oct) — follows X knob, CV In 1, and chord override |
 | CV Out 2 | Triangle LFO at the same rate as Pulse Out 2 — ±5V, 0V when detune is off |
 
 ## Controls
@@ -163,7 +163,7 @@ Each of the 13 Y positions (0–12 semitones) has 6 extension presets to explore
 - Detune zone (0/6/12/18 cents) determined by physical main knob position; CV In 2 cannot cross zone boundaries
 - Stereo width via per-voice phase offsets on Out 2 (0°, 15°, 30°, 45°, 60°, 75°)
 - Pulse Out 2 PWM: LFO rate proportional to detune amount — at 0 cents detune, duty is static at 50%
-- CV Out 1: intervalSemi × 34 counts/semitone; CVOut ±2047 = ±5V so 1 semitone = ~34 counts, 12 semitones = +1V exactly — always the voiced interval, not the raw knob position
+- CV Out 1: (X knob + CV In 1 tuning offset) + (voiced interval) in 1V/oct — 34 counts/semitone, clamped to ±5V; follows chord override for the interval component
 - CV Out 2: symmetric triangle LFO sharing the same phase accumulator as Pulse Out 2 — 0V when detuneAmt = 0, ±5V peak at maximum detune; both outputs always track each other's rate
 - Chord sequencer stores tuning ratio, interval, and preset — up to 8 chords
 - PulseIn2 arm guard: must be seen low before first rising edge is accepted (prevents boot glitch)
