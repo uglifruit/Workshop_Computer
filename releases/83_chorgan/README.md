@@ -1,4 +1,4 @@
-# Chorgan — 6-voice harmonic chord oscillator for Workshop Computer
+# Chorgan — 6-voice chord organ and chord sequencer for Workshop Computer
 
 Six oscillator voices tuned to a chord you shape in real time. Knob X and CV1 sets the root pitch,Knob Y sets the interval between the root and a second voice in semitone steps; four more voices fill out extensions (5ths, 7ths, 9ths, octaves) that you cycle through with the switch. The main knob morphs timbre from sine through triangle to saw. A detune control adds beating and chorus across all voices.
 
