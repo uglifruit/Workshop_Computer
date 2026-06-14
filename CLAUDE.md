@@ -133,6 +133,7 @@ Every `releases/<number>_<name>/` folder intended for Tom's card listing should 
 - `ComputerCard.h` — copy of **our fixed version** (not upstream's)
 - `CMakeLists.txt` — adapted from `releases/60_markov/CMakeLists.txt` (change `CARD_NAME`)
 - `pico_sdk_import.cmake` — copy verbatim from `releases/60_markov/`
+- Add a `.gitignore` containing `build/` and `UF2/` — the self-contained build generates hundreds of intermediate files that must not be committed
 - Verify by doing a **clean build from the releases folder itself** before pushing
 
 ### PR branch for Tom's repo
