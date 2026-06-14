@@ -58,6 +58,17 @@ Output `.uf2` lands in `Demonstrations+HelloWorlds/PicoSDK/ComputerCard/build/`.
 - `releases/<number>_<name>/main.cpp` and `.uf2` should always match the latest build
 - Sync by checking out the release branch and copying files across before pushing a PR update
 
+## The `examples/` folder — what to trust
+
+`examples/` contains two very different things mixed together:
+
+- **Tom's reference firmwares** (e.g. `sine_wave_lookup`, `reverb`, `passthrough`) — clean, canonical, good to learn from
+- **Andy's firmwares** (`glitch/`, `spread/`, `chorgan/`, `markov/`) — may be in-progress, broken, or mid-refactor at any point
+
+**Never use Andy's firmwares in `examples/` as reference implementations.** For patterns, DSP techniques, or API usage examples, use Tom's firmwares only. Andy's finished, stable code lives in `releases/<number>_<name>/` — but even there, treat it as "what we built" not "how ComputerCard works".
+
+Tom's recommended starting points: `sine_wave_lookup` (oscillator/LUT patterns), `20_reverb` (integer DSP), `00_Simple_MIDI`.
+
 ## ComputerCard Essentials
 
 - **Sample rate**: 48kHz — `ProcessSample()` called every ~20.8µs
