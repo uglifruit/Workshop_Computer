@@ -48,7 +48,7 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-constexpr int32_t  kCountsPerOctave = 341;
+constexpr int32_t  kCountsPerOctave = 409;  // CVIn -2048..2047 spans ±5V; 1V = 409.4 counts
 constexpr int32_t  kMaxChords       = 8;
 constexpr uint32_t kHoldSamples     = 48000;  // 1 second at 48kHz
 constexpr int32_t  kNumVoices       = 6;
