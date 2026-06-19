@@ -1,19 +1,26 @@
-// chordseq — morphing 8-oscillator chord synthesizer for the Workshop Computer
+// chordseq — 6-voice morphing chord synthesizer for the Workshop Computer
 //
-//   CV In 1       : V/oct pitch (root)
-//   Knob X        : Root pitch (coarse)
+//   CV In 1       : Root pitch V/oct (summed with Knob X)
+//   CV In 2       : Timbre offset — bipolar, offsets Main knob position
+//   Knob X        : Root pitch (C3–C6)
 //   Knob Y        : First interval above root — 13 steps, unison to octave
-//   Main Knob     : Oscillator shape — 0=saw, mid=triangle, max=sine-ish
-//   Audio Out 1   : Left  (8 oscs, evenly phase-spread)
-//   Audio Out 2   : Right (same 8 oscs, each shifted by a fixed extra offset)
-//
-// 8 oscillators: 4 on root, 4 on root + interval.
-// All oscillators share the same shape; phase offsets create width.
+//   Main Knob     : Oscillator shape — V-curve: centre=saw, edges=sine
+//   Switch Up     : Detune × 2 (12 or 18 cents depending on knob side)
+//   Switch Mid    : Detune normal (0 or 6 cents depending on knob side)
+//   Switch Down   : Tap = advance chord extension preset
+//   Pulse In 1    : Rising edge = advance chord extension preset
+//   Audio Out 1   : 6-voice mix (left)
+//   Audio Out 2   : 6-voice mix with per-voice phase offset (right)
+//   Pulse Out 1   : Square wave one octave below root
+//   Pulse Out 2   : PWM square at root freq, duty animated by detune LFO
+//   CV Out 1      : Root + interval pitch in 1V/oct (MIDI note)
+//   CV Out 2      : Triangle LFO (same rate as Pulse Out 2); 0V at zero detune
 
 #include "ComputerCard.h"
 
-// V/oct lookup: 341 entries spanning one octave, right-shifted by octave index.
-// Input 0..4095 → phase increment for 48kHz.  Source: Utility Pair by Chris Johnson.
+// ---------------------------------------------------------------------------
+// V/oct lookup table — 341 entries spanning one octave.
+// Source: Utility Pair by Chris Johnson.
 static const int32_t voct_vals[341] = {
 	314964268, 315605144, 316247323, 316890810, 317535606, 318181713, 318829136,
 	319477876, 320127936, 320779318, 321432026, 322086062, 322741429, 323398129,
@@ -66,147 +73,327 @@ static const int32_t voct_vals[341] = {
 	623558715, 624827505, 626098877, 627372836, 628649388
 };
 
-// Returns 32-bit phase increment for a given 0..4095 V/oct input value.
 static int32_t ExpVoct(int32_t in)
 {
 	if (in > 4091) in = 4091;
+	if (in < 0)    in = 0;
 	int32_t oct = in / 341;
 	int32_t sub = in % 341;
 	return voct_vals[sub] >> (12 - oct);
 }
 
-// Semitone ratio table: 13 entries (0..12 semitones above root).
-// Each entry is ExpVoct(341 * semitone / 12) — a fixed offset in V/oct units.
-// We store the ratio as a multiplier Q16: ratio[n] = 2^(n/12) * 65536.
-// Used to scale the root phase increment directly.
+// ---------------------------------------------------------------------------
+// Semitone ratio table: Q16 fixed-point multipliers for 0..12 semitones.
+// ratio[n] = 2^(n/12) * 65536
 static const int32_t semitone_ratio_q16[13] = {
-	// 2^(n/12) * 65536, n = 0..12
-	65536,  // unison
-	69432,  // min 2nd
-	73561,  // maj 2nd
-	77936,  // min 3rd
-	82570,  // maj 3rd
-	87480,  // perfect 4th
-	92681,  // tritone
-	98193,  // perfect 5th
-	104032, // min 6th
-	110218, // maj 6th
-	116768, // min 7th
-	123714, // maj 7th
-	131072, // octave (= 2x)
+	65536,   // 0  unison
+	69432,   // 1  min 2nd
+	73561,   // 2  maj 2nd
+	77936,   // 3  min 3rd
+	82570,   // 4  maj 3rd
+	87480,   // 5  perfect 4th
+	92681,   // 6  tritone
+	98193,   // 7  perfect 5th
+	104032,  // 8  min 6th
+	110218,  // 9  maj 6th
+	116768,  // 10 min 7th
+	123714,  // 11 maj 7th
+	131072,  // 12 octave
 };
 
-static constexpr int kNOscs = 8;
-// Phase offsets evenly distributed across 8 oscillators (0..2pi in uint32 space).
-// Osc i gets offset i * (2^32 / 8).
-static constexpr uint32_t kPhaseSpread = 0xFFFFFFFFu / kNOscs;
-// Additional stereo offset for right channel: half a spread step (pi/4 in this case).
-static constexpr uint32_t kStereoOffset = kPhaseSpread / 2;
+// Scale root_inc by n semitones (0..24).
+static int32_t SemitoneInc(int32_t root_inc, int n)
+{
+	if (n <= 0)  return root_inc;
+	if (n <= 12) return int32_t((int64_t(root_inc) * semitone_ratio_q16[n]) >> 16);
+	// n 13..24: chain two lookups
+	int32_t octave_up = root_inc << 1; // n=12 = ×2
+	int rem = n - 12;
+	return int32_t((int64_t(octave_up) * semitone_ratio_q16[rem]) >> 16);
+}
 
-// Startup holdoff and fade-in (see CLAUDE.md gotchas).
+// ---------------------------------------------------------------------------
+// Chord extension preset table.
+// extensions[y][preset][voice] — semitone offsets from root for voices 2..5.
+// -128 = silent voice.
+// y = Y-knob semitone (0..12), preset = 0..5, voice = 0..3
+static const int8_t extensions[13][6][4] = {
+	// Y=0: unison
+	{ {7,12,19,-128}, {7,14,-128,-128}, {12,19,24,-128}, {5,7,12,-128}, {7,12,24,-128}, {5,12,19,-128} },
+	// Y=1: min 2nd
+	{ {7,12,14,-128}, {7,12,-128,-128}, {5,7,12,-128},   {2,7,12,-128}, {7,14,19,-128}, {5,7,14,-128}  },
+	// Y=2: maj 2nd
+	{ {7,12,14,-128}, {5,9,12,-128},    {7,12,19,-128},  {2,7,14,-128}, {5,12,14,-128}, {9,12,16,-128} },
+	// Y=3: min 3rd
+	{ {7,10,12,-128}, {7,12,15,-128},   {3,7,12,-128},   {7,10,15,-128},{3,7,10,-128},  {7,12,19,-128} },
+	// Y=4: maj 3rd
+	{ {7,12,16,-128}, {7,11,14,-128},   {7,12,19,-128},  {4,7,11,-128}, {4,12,16,-128}, {7,14,16,-128} },
+	// Y=5: perfect 4th
+	{ {7,12,17,-128}, {5,7,12,-128},    {5,9,12,-128},   {5,7,17,-128}, {7,12,19,-128}, {5,12,17,-128} },
+	// Y=6: tritone
+	{ {6,12,18,-128}, {6,10,12,-128},   {6,12,-128,-128},{6,10,18,-128},{6,12,15,-128}, {6,10,16,-128} },
+	// Y=7: perfect 5th
+	{ {7,12,19,-128}, {4,7,12,-128},    {3,7,10,-128},   {7,12,24,-128},{4,7,16,-128},  {7,10,14,-128} },
+	// Y=8: min 6th
+	{ {7,12,20,-128}, {8,12,15,-128},   {5,8,12,-128},   {8,12,19,-128},{5,8,15,-128},  {8,15,20,-128} },
+	// Y=9: maj 6th
+	{ {7,12,21,-128}, {9,12,16,-128},   {4,9,12,-128},   {7,9,12,-128}, {9,12,21,-128}, {4,9,16,-128}  },
+	// Y=10: min 7th
+	{ {7,10,12,-128}, {7,10,14,-128},   {3,7,10,-128},   {5,7,10,-128}, {10,12,17,-128},{7,10,19,-128} },
+	// Y=11: maj 7th
+	{ {7,12,14,-128}, {6,11,14,-128},   {7,11,18,-128},  {4,7,14,-128}, {6,7,11,-128},  {11,14,18,-128}},
+	// Y=12: octave
+	{ {7,12,19,-128}, {5,12,17,-128},   {4,7,12,-128},   {7,12,24,-128},{5,7,12,-128},  {7,14,19,-128} },
+};
+
+// ---------------------------------------------------------------------------
+// Per-voice stereo phase offsets: 0, 15, 30, 45, 60, 75 degrees
+static constexpr uint32_t kStereoOff[6] = {
+	0,
+	0xFFFFFFFFu / 24,       // 15°
+	0xFFFFFFFFu / 12,       // 30°
+	0xFFFFFFFFu / 8,        // 45°
+	0xFFFFFFFFu / 6,        // 60°
+	5 * (0xFFFFFFFFu / 24), // 75°
+};
+
+// Detune spread weights for 6 voices: [-2, -1, 0, 0, +1, +2] * detuneStep
+static constexpr int8_t kDetuneWeight[6] = { -2, -1, 0, 0, 1, 2 };
+
 static constexpr int32_t kHoldoffSamples = 9600;
 static constexpr int32_t kFadeInSamples  = 480;
 
+// ---------------------------------------------------------------------------
 class ChordSeq : public ComputerCard
 {
 public:
-	uint32_t phase[kNOscs];
+	uint32_t phase[6];
+	uint32_t subPhase;   // sub-octave for Pulse Out 1
+	uint32_t pwmPhase;   // PWM accumulator for Pulse Out 2
+	uint32_t detunePhase;
+
+	int      preset;
+	int      semitone;   // cached Y semitone, updated each sample
+
+	// Switch tap detection
+	int32_t  switchDownTimer;
+	bool     switchHandled;
+
+	// Pulse In 1 arm guard
+	bool     pu1Armed;
+
+	// Startup
+	int32_t  sampleCount;
+	int32_t  fadeGain;
 
 	ChordSeq()
 	{
-		for (int i = 0; i < kNOscs; i++)
-			phase[i] = uint32_t(i) * kPhaseSpread;
+		for (int i = 0; i < 6; i++) phase[i] = uint32_t(i) * (0xFFFFFFFFu / 6);
+		subPhase     = 0;
+		pwmPhase     = 0;
+		detunePhase  = 0;
+		preset       = 0;
+		semitone     = 0;
+		switchDownTimer = 0;
+		switchHandled   = false;
+		pu1Armed        = false;
+		sampleCount     = 0;
+		fadeGain        = 0;
 	}
 
-	// Compute one sample of a morphed waveform from a 32-bit phase accumulator.
-	// shape 0..4095: 0=saw, 2048=triangle, 4095=sine-ish.
-	// Returns value in range -2047..2047.
-	int32_t __not_in_flash_func(ShapedOsc)(uint32_t ph, int32_t shape)
+	// Shaped oscillator: shapeParam 0=sine, 2047=saw.
+	// Returns -2047..2047.
+	int32_t __not_in_flash_func(ShapedOsc)(uint32_t ph, int32_t shapeParam)
 	{
-		// Raw sawtooth: map uint32 phase to -2047..2047
-		// phase 0 → -2047, phase 0x80000000 → 0, phase 0xFFFFFFFF → ~2047
-		int32_t saw = int32_t(ph >> 20) - 2048; // -2048..2047
+		// Sawtooth: phase 0→-2048, 0x80000000→0, 0xFFFFFFFF→2047
+		int32_t saw = int32_t(ph >> 20) - 2048;
 
-		// Triangle: fold saw so it goes up then down
-		// |saw| gives 0..2047 for both halves; scale to -2047..2047
+		// Triangle: peaks at saw=0, troughs at saw=±2047
 		int32_t tri;
 		if (saw >= 0)
-			tri = 2047 - (saw << 1);   //  2047 → -2047 as saw goes 0→2047
+			tri = 2047 - (saw << 1);
 		else
-			tri = 2047 + (saw << 1);   // -2047 → 2047 as saw goes -2048→0
-		// tri is now: 2047 at saw=0, -2047 at saw=±2047 — a triangle
+			tri = 2047 + (saw << 1);
 
-		// Sine-ish: apply a polynomial softening to triangle.
-		// Use a cubic: out = tri - tri^3 / (3 * 2047^2)
-		// This rounds the peaks without going float.
-		// tri range is -2047..2047; tri*tri <= 2047^2 = 4190209 (fits int32)
-		// tri^3 / (3 * 2047^2) = tri * (tri*tri) / 12570627
-		// We approximate /12570627 as >>23 (8388608) — slightly different but close enough
-		int32_t tri_norm = tri >> 3; // scale down to avoid overflow: -256..255
+		// Sine-ish: cubic softening of triangle
+		int32_t tri_norm = tri >> 3; // -256..255, avoids overflow
 		int32_t sine_ish = tri - ((tri * (tri_norm * tri_norm)) >> 17);
-		// sine_ish stays in ~-2047..2047
 
-		// Morph: 0..2047 = saw→triangle, 2048..4095 = triangle→sine_ish
+		// shapeParam: 0=sine, 1023=tri, 2047=saw
 		int32_t out;
-		if (shape < 2048)
+		if (shapeParam < 1024)
 		{
-			// saw (shape=0) → triangle (shape=2047)
-			out = (saw * (2047 - shape) + tri * shape) >> 11;
+			// sine → triangle
+			out = (sine_ish * (1023 - shapeParam) + tri * shapeParam) >> 10;
 		}
 		else
 		{
-			int32_t t = shape - 2048; // 0..2047
-			out = (tri * (2047 - t) + sine_ish * t) >> 11;
+			int32_t t = shapeParam - 1024; // 0..1023
+			out = (tri * (1023 - t) + saw * t) >> 10;
 		}
 		return out;
 	}
 
 	void __not_in_flash_func(ProcessSample)() override
 	{
-		static int32_t sampleCount = 0;
-		static int32_t fadeGain = 0; // Q12 gain, ramps 0→4095 over fade-in
-
 		// --- Pitch ---
-		// Knob X sweeps C3..C6 (3 octaves = 1023 V/oct steps).
-		// C3 sits at V/oct index ~2472; CV In shifts up/down by up to ~1 octave.
 		static constexpr int32_t kPitchBase  = 2472; // ~C3
-		static constexpr int32_t kPitchRange = 1023; // 3 octaves
-		int32_t k = (KnobVal(Knob::X) * kPitchRange) >> 12;
-		int32_t cv = CVIn1();
-		int32_t voct_in = kPitchBase + k + cv;
+		static constexpr int32_t kPitchRange = 1023; // 3 octaves to ~C6
+		int32_t kx  = (KnobVal(Knob::X) * kPitchRange) >> 12;
+		int32_t cv1 = CVIn1();
+		int32_t voct_in = kPitchBase + kx + cv1;
 		if (voct_in < 0)    voct_in = 0;
 		if (voct_in > 4095) voct_in = 4095;
 
 		int32_t root_inc = ExpVoct(voct_in);
 
 		// --- Interval (Y knob → 13 semitone steps) ---
-		// KnobVal returns 0..4095; divide into 13 equal regions
-		int32_t y = KnobVal(Knob::Y);
-		int32_t semitone = (y * 13) >> 12; // 0..12
+		semitone = (KnobVal(Knob::Y) * 13) >> 12;
 		if (semitone > 12) semitone = 12;
-		// Scale root increment by semitone ratio
-		int32_t interval_inc = int32_t((int64_t(root_inc) * semitone_ratio_q16[semitone]) >> 16);
+		int32_t interval_inc = SemitoneInc(root_inc, semitone);
 
-		// --- Shape (Main knob) ---
-		int32_t shape = KnobVal(Knob::Main); // 0..4095
+		// --- Shape (V-curve: centre=saw, edges=sine) ---
+		int32_t morphPos = KnobVal(Knob::Main) + CVIn2();
+		if (morphPos < 0)    morphPos = 0;
+		if (morphPos > 4095) morphPos = 4095;
+		// shapeParam: 0=sine, 2047=saw
+		// V-curve: CCW(0)→sine, centre(2048)→saw, CW(4095)→sine
+		int32_t shapeParam;
+		if (morphPos < 2048)
+			shapeParam = morphPos;              // CCW half: 0=sine → 2047=saw
+		else
+			shapeParam = 4095 - morphPos;       // CW half:  2047=saw → 0=sine
 
-		// --- Advance phases and sum ---
-		// Oscs 0..3: root pitch. Oscs 4..7: interval pitch.
-		int32_t sum_L = 0, sum_R = 0;
-		for (int i = 0; i < kNOscs; i++)
+		// --- Detune ---
+		// Zone determined by physical knob (not CV-offset morphPos)
+		int32_t physKnob = KnobVal(Knob::Main);
+		Switch  sw       = SwitchVal();
+		int32_t detuneAmtCents;
+		if (sw == Switch::Up)
+			detuneAmtCents = (physKnob < 2048) ? 10 : 15;
+		else
+			detuneAmtCents = (physKnob < 2048) ?  0 :  5;
+
+		// detuneStep: phase-increment units per "weight unit"
+		// root_inc * cents / 1200; safe integer for cents up to 18
+		int32_t detuneStep = int32_t((int64_t(root_inc) * detuneAmtCents) / 1200);
+
+		// --- Detune LFO ---
+		// Rate proportional to detuneAmtCents; 0 → static
+		// At max detune (18 cents) aim for ~2–4 Hz LFO
+		// lfoRate in uint32 increments: 4Hz at 48kHz = 4*2^32/48000 ≈ 357,913
+		int32_t lfoRate = detuneAmtCents * 19884; // 19884 ≈ 357913/18
+		detunePhase += uint32_t(lfoRate);
+		// Triangle LFO from detunePhase
+		int32_t dp = int32_t(detunePhase >> 17); // -16384..16383
+		int32_t lfoTri;
+		if (dp >= 0)
+			lfoTri = 16383 - (dp << 1 > 32767 ? 32767 : dp << 1);
+		else
+			lfoTri = 16383 + (dp << 1 < -32767 ? -32767 : dp << 1);
+		// Scale lfoTri to -2047..2047
+		lfoTri = lfoTri >> 3;
+
+		// --- Voice increments ---
+		// voice 0: root,     detune weight -2
+		// voice 1: interval, detune weight -1
+		// voice 2..5: extension voices, weights 0, 0, +1, +2
+		int32_t voice_inc[6];
+		voice_inc[0] = root_inc     + kDetuneWeight[0] * detuneStep;
+		voice_inc[1] = interval_inc + kDetuneWeight[1] * detuneStep;
+
+		for (int v = 0; v < 4; v++)
 		{
-			int32_t inc = (i < 4) ? root_inc : interval_inc;
-			phase[i] += uint32_t(inc);
-
-			int32_t s_L = ShapedOsc(phase[i], shape);
-			int32_t s_R = ShapedOsc(phase[i] + kStereoOffset, shape);
-			sum_L += s_L;
-			sum_R += s_R;
+			int8_t ext = extensions[semitone][preset][v];
+			if (ext == -128)
+			{
+				voice_inc[2 + v] = 0; // silent
+			}
+			else
+			{
+				int32_t ext_inc = SemitoneInc(root_inc, int(ext));
+				voice_inc[2 + v] = ext_inc + kDetuneWeight[2 + v] * detuneStep;
+			}
 		}
 
-		// Mix down 8 oscillators: divide by 8 (>> 3) to avoid clipping
+		// --- Oscillator sum ---
+		int32_t sum_L = 0, sum_R = 0;
+		for (int i = 0; i < 6; i++)
+		{
+			phase[i] += uint32_t(voice_inc[i]);
+			if (voice_inc[i] == 0) continue; // silent extension voice
+			sum_L += ShapedOsc(phase[i],                    shapeParam);
+			sum_R += ShapedOsc(phase[i] + kStereoOff[i],   shapeParam);
+		}
+		// Divide by 8 for headroom (not all 6 voices always active)
 		int32_t out_L = sum_L >> 3;
 		int32_t out_R = sum_R >> 3;
+
+		// --- Pulse Out 1: sub-octave square ---
+		subPhase += uint32_t(root_inc >> 1);
+		PulseOut1(subPhase >> 31);
+
+		// --- Pulse Out 2: PWM square at root, duty animated by LFO ---
+		pwmPhase += uint32_t(root_inc);
+		// Duty: 50% base ± ~20% from LFO (lfoTri range -2047..2047, duty range ~30–70%)
+		int32_t duty = 2048 + (lfoTri >> 2); // 1536..2559 out of 4096
+		PulseOut2(int32_t(pwmPhase >> 20) < duty);
+
+		// --- CV Out 1: root + interval as MIDI note (update every 512 samples) ---
+		static int32_t cvOutCounter = 0;
+		if (++cvOutCounter >= 512)
+		{
+			cvOutCounter = 0;
+			// C3 = MIDI 48 at voct_in ~2472; 341 steps per octave = 12 semitones
+			int32_t midiNote = 48 + ((voct_in - 2472) * 12 + 170) / 341 + semitone;
+			if (midiNote < 0)   midiNote = 0;
+			if (midiNote > 127) midiNote = 127;
+			CVOut1MIDINote(uint8_t(midiNote));
+		}
+
+		// --- CV Out 2: triangle LFO (0V when detune is off) ---
+		CVOut2(int16_t(lfoTri));
+
+		// --- LEDs ---
+		// LEDs 0–4: position of Y semitone across 13 steps mapped to 5 LEDs
+		// LED 5: preset brightness
+		static int32_t ledCounter = 0;
+		if (++ledCounter >= 256)
+		{
+			ledCounter = 0;
+			int32_t ledIdx = semitone * 5 / 13; // 0..4
+			for (int i = 0; i < 5; i++)
+				LedOn(i, i == ledIdx);
+			LedBrightness(5, uint16_t(preset * 819)); // 0, 819, 1638, 2457, 3276, 4095
+		}
+
+		// --- Switch tap detection (boot guard: wait 4800 samples) ---
+		if (sampleCount > 4800)
+		{
+			if (sw == Switch::Down)
+			{
+				switchDownTimer++;
+				// Hold threshold: 48000 samples (~1s) — reserved for sequencer
+			}
+			else
+			{
+				if (switchDownTimer > 0 && switchDownTimer < 48000 && !switchHandled)
+				{
+					preset = (preset + 1) % 6;
+					switchHandled = true;
+				}
+				if (sw != Switch::Down)
+				{
+					switchDownTimer = 0;
+					switchHandled   = false;
+				}
+			}
+		}
+
+		// --- Pulse In 1: advance preset on rising edge ---
+		if (!PulseIn1()) pu1Armed = true;
+		if (pu1Armed && PulseIn1RisingEdge())
+			preset = (preset + 1) % 6;
 
 		// --- Holdoff and fade-in ---
 		if (sampleCount < kHoldoffSamples)
@@ -216,6 +403,7 @@ public:
 			AudioOut2(0);
 			return;
 		}
+		sampleCount++; // keep incrementing for switch guard
 
 		if (fadeGain < 4095)
 		{
@@ -225,14 +413,13 @@ public:
 			out_R = (out_R * fadeGain) >> 12;
 		}
 
-		// Clamp
 		if (out_L >  2047) out_L =  2047;
 		if (out_L < -2047) out_L = -2047;
 		if (out_R >  2047) out_R =  2047;
 		if (out_R < -2047) out_R = -2047;
 
-		AudioOut1(out_L);
-		AudioOut2(out_R);
+		AudioOut1(int16_t(out_L));
+		AudioOut2(int16_t(out_R));
 	}
 };
 
