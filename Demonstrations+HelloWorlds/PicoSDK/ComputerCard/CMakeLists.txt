@@ -69,7 +69,7 @@ add_example(passthrough)
 
 add_example(glitch)
 
-add_example(hardsync)
+# add_example(hardsync)  # source deleted on this branch
 
 add_example(wavefolder)
 
@@ -94,5 +94,7 @@ add_example(usb_serial)
 target_link_libraries(usb_serial pico_multicore)
 pico_enable_stdio_usb(usb_serial 1)
 
-add_example(spread)
-add_example(chorgan)
+# add_example(spread)   # source deleted on this branch
+# add_example(chorgan)  # source deleted on this branch
+add_example(smear)
+add_example(chordseq)
