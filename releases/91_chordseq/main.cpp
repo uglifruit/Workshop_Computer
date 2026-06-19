@@ -175,12 +175,34 @@ public:
 	int      preset;
 	int      semitone;   // cached Y semitone, updated each sample
 
-	// Switch tap detection
+	// Switch tap/hold detection
 	int32_t  switchDownTimer;
 	bool     switchHandled;
+	bool     downArmed;
+	int32_t  pendingStoreSlot;
 
 	// Pulse In 1 arm guard
 	bool     pu1Armed;
+
+	// Pulse In 2 arm guard
+	bool     pu2Armed;
+
+	// Chord sequencer
+	static constexpr int kMaxChords = 8;
+	struct ChordState { int32_t voct_in; int32_t intervalSemi; int32_t preset; };
+	ChordState chordSeq[kMaxChords];
+	int32_t    chordCount;
+	int32_t    chordWriteIdx;
+	int32_t    chordPlayIdx;
+
+	// Chord override (recalled via Pulse In 2)
+	bool     chordOverride;
+	int32_t  overrideVoct;
+	int32_t  overrideInterval;
+	int32_t  overridePreset;
+	int32_t  overrideSlot;
+	int32_t  overrideBaseVoct;      // voct_in at time of recall, for break detection
+	int32_t  overrideBaseInterval;
 
 	// Startup
 	int32_t  sampleCount;
@@ -194,11 +216,24 @@ public:
 		detunePhase  = 0;
 		preset       = 0;
 		semitone     = 0;
-		switchDownTimer = 0;
-		switchHandled   = false;
-		pu1Armed        = false;
-		sampleCount     = 0;
-		fadeGain        = 0;
+		switchDownTimer  = 0;
+		switchHandled    = false;
+		downArmed        = true;
+		pendingStoreSlot = -1;
+		pu1Armed         = false;
+		pu2Armed         = false;
+		chordCount       = 0;
+		chordWriteIdx    = 0;
+		chordPlayIdx     = 0;
+		chordOverride    = false;
+		overrideVoct     = 0;
+		overrideInterval = 0;
+		overridePreset   = 0;
+		overrideSlot     = 0;
+		overrideBaseVoct     = 0;
+		overrideBaseInterval = 0;
+		sampleCount      = 0;
+		fadeGain         = 0;
 	}
 
 	// Shaped oscillator: shapeParam 0=sine, 2047=saw.
@@ -250,6 +285,26 @@ public:
 		// --- Interval (Y knob → 13 semitone steps) ---
 		semitone = (KnobVal(Knob::Y) * 13) >> 12;
 		if (semitone > 12) semitone = 12;
+
+		// --- Chord override: substitute recalled chord values ---
+		// Break when voct_in moves >28 counts (~1 semitone) or interval changes.
+		if (chordOverride)
+		{
+			int32_t diff = voct_in - overrideBaseVoct;
+			if (diff < 0) diff = -diff;
+			if (diff > 28 || semitone != overrideBaseInterval)
+			{
+				chordOverride = false;
+			}
+			else
+			{
+				voct_in  = overrideVoct;
+				semitone = overrideInterval;
+				preset   = overridePreset;
+				root_inc = ExpVoct(voct_in);
+			}
+		}
+
 		int32_t interval_inc = SemitoneInc(root_inc, semitone);
 
 		// --- Shape (V-curve: centre=saw, edges=sine) ---
@@ -354,46 +409,98 @@ public:
 		// --- CV Out 2: triangle LFO (0V when detune is off) ---
 		CVOut2(int16_t(lfoTri));
 
-		// --- LEDs ---
-		// LEDs 0–4: position of Y semitone across 13 steps mapped to 5 LEDs
-		// LED 5: preset brightness
-		static int32_t ledCounter = 0;
-		if (++ledCounter >= 256)
-		{
-			ledCounter = 0;
-			int32_t ledIdx = semitone * 5 / 13; // 0..4
-			for (int i = 0; i < 5; i++)
-				LedOn(i, i == ledIdx);
-			LedBrightness(5, uint16_t(preset * 819)); // 0, 819, 1638, 2457, 3276, 4095
-		}
-
-		// --- Switch tap detection (boot guard: wait 4800 samples) ---
+		// --- Switch tap/hold (boot guard: wait 4800 samples) ---
 		if (sampleCount > 4800)
 		{
 			if (sw == Switch::Down)
 			{
 				switchDownTimer++;
-				// Hold threshold: 48000 samples (~1s) — reserved for sequencer
+				// At exactly 1 second: mark pending store (LEDs change immediately)
+				if (switchDownTimer == 48000 && downArmed)
+					pendingStoreSlot = chordWriteIdx;
 			}
 			else
 			{
-				if (switchDownTimer > 0 && switchDownTimer < 48000 && !switchHandled)
+				if (downArmed)
 				{
-					preset = (preset + 1) % 6;
-					switchHandled = true;
+					if (pendingStoreSlot >= 0)
+					{
+						// Release after hold: commit the store
+						chordSeq[chordWriteIdx] = { voct_in, semitone, preset };
+						chordWriteIdx = (chordWriteIdx + 1) % kMaxChords;
+						if (chordCount < kMaxChords) chordCount++;
+						pendingStoreSlot = -1;
+					}
+					else if (switchDownTimer > 0 && switchDownTimer < 48000)
+					{
+						// Short tap: advance preset
+						preset = (preset + 1) % 6;
+						if (chordOverride) overridePreset = preset;
+					}
+					downArmed = false;
 				}
-				if (sw != Switch::Down)
-				{
-					switchDownTimer = 0;
-					switchHandled   = false;
-				}
+				if (switchDownTimer == 0) downArmed = true;
+				switchDownTimer = 0;
 			}
 		}
 
 		// --- Pulse In 1: advance preset on rising edge ---
 		if (!PulseIn1()) pu1Armed = true;
 		if (pu1Armed && PulseIn1RisingEdge())
+		{
 			preset = (preset + 1) % 6;
+			if (chordOverride) overridePreset = preset;
+		}
+
+		// --- Pulse In 2: recall next stored chord (arm guard) ---
+		if (!PulseIn2()) pu2Armed = true;
+		if (pu2Armed && PulseIn2RisingEdge() && chordCount > 0)
+		{
+			int32_t idx      = chordPlayIdx % chordCount;
+			overrideVoct     = chordSeq[idx].voct_in;
+			overrideInterval = chordSeq[idx].intervalSemi;
+			overridePreset   = chordSeq[idx].preset;
+			overrideSlot     = idx;
+			overrideBaseVoct     = voct_in;
+			overrideBaseInterval = semitone;
+			chordOverride        = true;
+			chordPlayIdx         = (chordPlayIdx + 1) % chordCount;
+		}
+
+		// --- LEDs ---
+		static int32_t ledCounter = 0;
+		if (++ledCounter >= 256)
+		{
+			ledCounter = 0;
+			if (pendingStoreSlot >= 0)
+			{
+				// Storing: LEDs 1,3,5 full bright; LEDs 0,2,4 = slot in binary
+				LedBrightness(0, (pendingStoreSlot & 1) ? 4095 : 0);
+				LedBrightness(1, 4095);
+				LedBrightness(2, (pendingStoreSlot & 2) ? 4095 : 0);
+				LedBrightness(3, 4095);
+				LedBrightness(4, (pendingStoreSlot & 4) ? 4095 : 0);
+				LedBrightness(5, 4095);
+			}
+			else if (chordOverride)
+			{
+				// Chord held: LEDs 0,2,4 full bright; LEDs 1,3,5 = slot in binary
+				LedBrightness(0, 4095);
+				LedBrightness(1, (overrideSlot & 1) ? 4095 : 0);
+				LedBrightness(2, 4095);
+				LedBrightness(3, (overrideSlot & 2) ? 4095 : 0);
+				LedBrightness(4, 4095);
+				LedBrightness(5, (overrideSlot & 4) ? 4095 : 0);
+			}
+			else
+			{
+				// Normal: Y position on LEDs 0–4, preset brightness on LED 5
+				int32_t ledIdx = semitone * 5 / 13;
+				for (int i = 0; i < 5; i++)
+					LedOn(i, i == ledIdx);
+				LedBrightness(5, uint16_t(preset * 819));
+			}
+		}
 
 		// --- Holdoff and fade-in ---
 		if (sampleCount < kHoldoffSamples)
