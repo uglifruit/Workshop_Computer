@@ -270,7 +270,7 @@ public:
 		Switch  sw       = SwitchVal();
 		int32_t detuneAmtCents;
 		if (sw == Switch::Up)
-			detuneAmtCents = (physKnob < 2048) ? 10 : 15;
+			detuneAmtCents = (physKnob < 2048) ? 15 : 10;
 		else
 			detuneAmtCents = (physKnob < 2048) ?  0 :  5;
 
