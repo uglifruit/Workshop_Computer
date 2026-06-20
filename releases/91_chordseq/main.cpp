@@ -345,8 +345,9 @@ public:
 		if (morphPos < 0)    morphPos = 0;
 		if (morphPos > 4095) morphPos = 4095;
 
+		// Shape W-curve: pulse(extremes) → sine(9/3 o'clock) → saw(centre)
 		int32_t shapeParam, pulseAmt;
-		static constexpr int32_t kOuterZone = 512; // outer zone width (each side)
+		static constexpr int32_t kOuterZone = 512;
 		if (morphPos < kOuterZone)
 		{
 			// CCW outer zone: sine → narrow pulse
