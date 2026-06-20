@@ -15,7 +15,7 @@ set(PICO_BOARD pico CACHE STRING "Board type")
 cmake_minimum_required (VERSION 3.13)
 include(pico_sdk_import.cmake)
 
-set(CARD_NAME "chordseq")
+set(CARD_NAME "chorgan")
 project(${CARD_NAME} C CXX ASM)
 set(CMAKE_CXX_STANDARD 17)
 pico_sdk_init()
