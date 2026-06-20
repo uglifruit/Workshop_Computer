@@ -174,11 +174,15 @@ Each of the 13 Y positions (0–12 semitones) has 6 extension presets to explore
 
 ## Credits
 
-By Andy Jenkinson ([uglifruit](https://github.com/uglifruit)), developed with Claude Code.
+By Andy Jenkinson ([uglifruit](https://github.com/uglifruit)), developed with [Claude Code](https://claude.ai/code).
 
-Built on the [Workshop Computer](https://github.com/TomWhitwell/Workshop_Computer) platform by Tom Whitwell, using the ComputerCard framework.
+Built on the [Workshop Computer](https://github.com/TomWhitwell/Workshop_Computer) platform by Tom Whitwell (Music Thing Modular), using the ComputerCard framework.
 
-Waveform morphing approach inspired in part by [Mutable Instruments Braids](https://mutable-instruments.net/modules/braids/).
+V/oct lookup table (`voct_vals`) from [Utility Pair](https://github.com/chrisgjohnson/Utility-Pair) by Chris Johnson.
+
+Waveform morphing concept inspired by [Mutable Instruments Braids](https://mutable-instruments.net/modules/braids/) (Émilie Gillet).
+
+Name and concept inspired by the [Music Thing Modular Chord Organ](https://github.com/TomWhitwell/Chord-Organ).
 
 ---
 Licensed under [Creative Commons Attribution-ShareAlike 4.0](https://creativecommons.org/licenses/by-sa/4.0/).

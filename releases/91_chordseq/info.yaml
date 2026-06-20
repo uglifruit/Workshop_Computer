@@ -1,6 +1,6 @@
-Name: ChordSeq
-Description: 8-oscillator chord synthesizer with morphing waveform shape
-Language: C++ (ComputerCard)
-Creator: uglifruit
-Version: 0.1.0
-Status: Released
+Name: Chorgan
+Description: "Chorgan — 6-voice chord synthesizer with morphing timbre, chord extension presets, and built-in chord sequencer. Two modes: normal (detune/chorus) and slew (portamento chord changes). Inspired by the Music Thing Modular Chord Organ."
+Language: "C++ (Pico SDK / ComputerCard)"
+Creator: "Andy Jenkinson (uglifruit)"
+Version: "0.1.0"
+Status: "released"

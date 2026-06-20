@@ -1,10 +1,13 @@
-# ChordSeq
+# Chorgan
 
 Six-voice morphing chord synthesizer with built-in chord sequencer for the Workshop Computer.
 
-Knob X and CV In 1 set the root pitch. Knob Y selects an interval above the root in semitone steps. Four extension voices fill out the chord — 5ths, 7ths, 9ths, open voicings — chosen by the current preset and always drawn from the same harmonic world as the interval you've chosen. The Main knob morphs all six voices simultaneously from sine through triangle to saw and back.
+Knob X and CV In 1 set the root pitch. Knob Y selects an interval above the root in semitone steps. Four extension voices fill out the chord — the extensions are drawn from the same harmonic world as the chosen interval, so a perfect 5th stays open and powerful, a minor 3rd stays dark, a major 3rd stays bright. The Main knob morphs all six voices through sine, triangle, saw, and narrow pulse. A built-in chord sequencer stores up to eight chords and steps through them on rising edges at Pulse In 2.
 
-A built-in chord sequencer stores up to eight chords and steps through them on rising edges at Pulse In 2.
+Two modes are available, selected at boot:
+
+- **Normal mode** (default): detune/chorus across the six voices, animated by an LFO
+- **Slew mode** (hold Switch Down at power-on): chord changes glide — all six voices portamento independently to their new pitches
 
 ## Inputs
 
@@ -35,20 +38,21 @@ Knob X sweeps from C3 to C6. CV In 1 tracks 1V/oct on top of that. Both are summ
 Sets the interval between voice 1 (root) and voice 2 in audible integer semitone steps, 0 (unison) to 12 (octave). Voices 3–6 are chord extensions above the root, chosen by the current preset.
 
 **Main Knob + CV In 2 — Timbre**
-Morphs the waveform of all six voices simultaneously. The curve is a V-shape: the centre position gives the fullest, brightest sound; the edges give the smoothest.
+Morphs the waveform of all six voices simultaneously. The curve is a W-shape:
 
 | Position | Waveform |
 |----------|----------|
-| Fully CCW | Sine |
-| 9 o'clock | Triangle |
+| Fully CCW | Narrow pulse |
+| 9 o'clock | Sine |
 | 12 o'clock | Saw (fullest) |
-| 3 o'clock | Triangle |
-| Fully CW | Sine |
+| 3 o'clock | Sine |
+| Fully CW | Narrow pulse |
 
-CV In 2 offsets the knob position bipolarly but cannot push the timbre into a different detune zone — the detune zone is always determined by the physical knob position.
+CV In 2 offsets the knob position bipolarly but cannot push the timbre into a different detune/slew zone — that is always determined by the physical knob position.
 
-**Switch + Main Knob position — Detune**
-Four detune levels selected by switch position and whether the Main knob is CCW or CW of centre:
+**Switch + Main Knob position — Detune (normal mode) / Slew rate (slew mode)**
+
+In normal mode, four detune levels are selected by switch position and whether the Main knob is CCW or CW of centre:
 
 | Switch | Knob position | Outer voice detune |
 |--------|--------------|-------------------|
@@ -57,7 +61,14 @@ Four detune levels selected by switch position and whether the Main knob is CCW 
 | Up | CCW of centre | 15 cents |
 | Up | CW of centre | 10 cents |
 
-Detune is applied symmetrically — outer voices detune most, inner voices least. At unison interval with detune on, the card produces a thick chorus cluster.
+In slew mode, the same four zones set the portamento rate:
+
+| Switch | Knob position | Slew rate |
+|--------|--------------|-----------|
+| Mid | CCW of centre | Instant |
+| Mid | CW of centre | Fast (~10ms) |
+| Up | CW of centre | Slow (~85ms) |
+| Up | CCW of centre | Glacial (~340ms) |
 
 **Tap Switch Down — Cycle preset**
 A short tap (less than one second) advances the chord extension preset for voices 3–6. There are 6 presets per interval, cycling through different harmonic choices. A rising edge on Pulse In 1 does the same thing.
@@ -82,6 +93,12 @@ Each of the 13 Y positions (0–12 semitones) has 6 extension presets. Extension
 | 11 | Maj 7th | Lydian/maj7 — M3, P5, M7, #4 |
 | 12 | Octave | Quartal/suspended — 4ths, 5ths, 2nds |
 
+## Boot modes
+
+**Normal mode** — power on with Switch in any position except Down. LEDs sweep 0→5 at startup.
+
+**Slew mode** — hold Switch Down before powering on, hold until LEDs flash (all on, then all off, ~200ms). Detune is disabled; chord changes glide instead.
+
 ## Chord sequencer
 
 **Hold Switch Down (1 second) — Store chord**
@@ -104,11 +121,13 @@ Tapping Switch Down or sending a rising edge to Pulse In 1 advances the preset w
 
 | State | LED pattern |
 |-------|-------------|
+| Boot (normal mode) | Single LED sweeps 0→5 |
+| Boot (slew mode) | All LEDs flash on then off |
 | Storing (hold active) | LEDs 1, 3, 5 full bright; LEDs 0, 2, 4 = slot number in binary |
 | Chord held | LEDs 0, 2, 4 full bright; LEDs 1, 3, 5 = recalled slot in binary |
 | Normal | LEDs 0–4: interval position; LED 5: preset brightness |
 
-In normal mode, LEDs 0–4 show where Knob Y is across the 0–12 semitone range. LED 5 brightness indicates the current preset (dim = preset 0, bright = preset 5).
+In normal operation, LEDs 0–4 show where Knob Y is across the 0–12 semitone range. LED 5 brightness indicates the current preset (dim = preset 0, bright = preset 5).
 
 ## Voice layout
 
@@ -126,55 +145,62 @@ In normal mode, LEDs 0–4 show where Knob Y is across the 0–12 semitone range
 **Pitched chord voice**
 1. Patch 1V/oct into CV In 1
 2. Knob Y to 4 (major 3rd), tap Switch Down to cycle presets
-3. Main Knob to taste — 12 o'clock for saw, fully CCW/CW for clean sine
+3. Main Knob to taste — 12 o'clock for saw, 9/3 o'clock for sine, fully CCW/CW for pulse
 
 **Slow timbre sweep**
 1. Patch a slow LFO into CV In 2
-2. The timbre morphs symmetrically around the current Main knob position — from whatever the knob sets toward sine at both extremes of the LFO
+2. The timbre morphs symmetrically around the current Main knob position
 
 **Chord sequence from a clock**
 1. Set Pitch (X + CV In 1), Interval (Y), and preset (Switch Down taps) for your first chord
 2. Hold Switch Down for one second to store it
 3. Repeat for up to eight chords
-4. Patch a clock or gate sequence into Pulse In 2 — the sequence steps through your stored chords on each rising edge
+4. Patch a clock or gate sequence into Pulse In 2 — steps through your stored chords on each rising edge
 5. Move Knob X or Y by more than a semitone to drop back to manual
+
+**Portamento chord changes (slew mode)**
+1. Boot with Switch Down held
+2. Set Switch Mid, Knob CW of centre for fast slew; Switch Up, Knob CCW for glacial
+3. Tap Switch Down or trigger Pulse In 1 to change preset — pitches glide to the new chord
 
 **Sub-bass layer**
 1. Patch Pulse Out 1 to a VCA or filter — clean square one octave below root
-2. Patch Pulse Out 2 for a PWM version — duty cycle animates with detune amount; at 0 cents it sits static at 50%
+2. Patch Pulse Out 2 for a PWM version — duty cycle animates with detune amount
 
 **Interval-keyed filter or oscillator**
 1. Patch CV Out 1 to a filter cutoff or a second oscillator's 1V/oct input
-2. As you tap through presets or trigger chord recall, the CV tracks the voiced interval in semitones — use it to transpose an external voice in harmony
+2. The CV tracks the voiced interval in semitones — use it to transpose an external voice in harmony
 
 **Chorus depth animation**
 1. Patch CV Out 2 to a VCA or delay time CV input
-2. The triangle LFO rate scales with your detune setting (faster at higher detune), and is 0V when detune is off — modulation depth breathes automatically with the sound
-
-**Chord drone with timbre automation**
-1. Store 3–4 chords at different X, Y, and preset positions
-2. Patch a slow clock into Pulse In 2 to step through them
-3. Patch a separate LFO into CV In 2 for continuous timbre movement across chord changes
+2. The triangle LFO rate scales with your detune setting and is 0V when detune is off
 
 ## Technical notes
 
-- 6-phase-accumulator oscillators, integer arithmetic throughout
+- 6-phase-accumulator oscillators, integer arithmetic throughout (RP2040 has no FPU)
 - Tuning ratio applied uniformly to all voices — no per-voice stepping on X knob or CV In 1
-- Detune zone (0/5/15/10 cents) determined by physical Main knob position; CV In 2 cannot cross zone boundaries
+- Detune zone determined by physical Main knob position; CV In 2 cannot cross zone boundaries
 - Stereo width via per-voice phase offsets on Audio Out 2 (0°, 15°, 30°, 45°, 60°, 75°)
+- Waveform: W-shape — pulse (CCW extreme) → sine (9 o'clock) → saw (12 o'clock) → sine (3 o'clock) → pulse (CW extreme)
 - Pulse Out 2 PWM: LFO rate proportional to detune amount — at 0 cents detune, duty is static at 50%
 - CV Out 1: (X knob + CV In 1) + voiced interval in 1V/oct — clamped to ±5V; follows chord override
-- CV Out 2: symmetric triangle LFO sharing phase with Pulse Out 2 — 0V at zero detune, ±5V peak at maximum
-- Chord sequencer stores pitch, interval, and preset — up to 8 chords; override breaks on >1 semitone pitch or interval change from position at recall time
+- CV Out 2: triangle LFO sharing phase with Pulse Out 2 — 0V at zero detune, ±5V peak at maximum
+- Chord sequencer: stores pitch, interval, and preset — up to 8 chords; override breaks on >1 semitone movement from position at recall time
+- Slew mode: per-voice IIR portamento on phase increment; rates: instant / ~10ms / ~85ms / ~340ms
 - 200ms startup holdoff before audio begins — eliminates power-on click
 
 ## Credits
 
-By Andy Jenkinson ([uglifruit](https://github.com/uglifruit)), developed with Claude Code.
+By Andy Jenkinson ([uglifruit](https://github.com/uglifruit)), developed with [Claude Code](https://claude.ai/code).
 
-Built on the [Workshop Computer](https://github.com/TomWhitwell/Workshop_Computer) platform by Tom Whitwell, using the ComputerCard framework.
+Built on the [Workshop Computer](https://github.com/TomWhitwell/Workshop_Computer) platform by Tom Whitwell (Music Thing Modular), using the ComputerCard framework.
 
-Waveform morphing approach inspired in part by [Mutable Instruments Braids](https://mutable-instruments.net/modules/braids/).
+V/oct lookup table (`voct_vals`) from [Utility Pair](https://github.com/chrisgjohnson/Utility-Pair) by Chris Johnson, used with permission under the original licence.
+
+
+Waveform morphing concept inspired by [Mutable Instruments Braids](https://mutable-instruments.net/modules/braids/) (Émilie Gillet).
+
+Name and concept inspired by the [Music Thing Modular Chord Organ](https://github.com/TomWhitwell/Chord-Organ).
 
 ---
 Licensed under [Creative Commons Attribution-ShareAlike 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
