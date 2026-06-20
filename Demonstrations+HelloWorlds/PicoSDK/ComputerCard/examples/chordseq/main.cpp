@@ -236,9 +236,24 @@ public:
 		fadeGain         = 0;
 	}
 
-	// Shaped oscillator: shapeParam 0=sine, 2047=saw.
+	// Wavefolder: reflects signal at ±thresh, applied twice for 2 folds.
+	// thresh in same units as x (-2047..2047). Returns folded value.
+	static int32_t Fold(int32_t x, int32_t thresh)
+	{
+		// fold 1
+		if (x >  thresh) x =  (thresh << 1) - x;
+		if (x < -thresh) x = -(thresh << 1) - x;
+		// fold 2
+		if (x >  thresh) x =  (thresh << 1) - x;
+		if (x < -thresh) x = -(thresh << 1) - x;
+		return x;
+	}
+
+	// Shaped oscillator.
+	// shapeParam 0..2047: 0=sine, 1023=triangle, 2047=saw  (inner V zone)
+	// foldAmt    0..2047: 0=no fold, 2047=full fold (outer zone, applied to sine)
 	// Returns -2047..2047.
-	int32_t __not_in_flash_func(ShapedOsc)(uint32_t ph, int32_t shapeParam)
+	int32_t __not_in_flash_func(ShapedOsc)(uint32_t ph, int32_t shapeParam, int32_t foldAmt)
 	{
 		// Sawtooth: phase 0→-2048, 0x80000000→0, 0xFFFFFFFF→2047
 		int32_t saw = int32_t(ph >> 20) - 2048;
@@ -254,17 +269,25 @@ public:
 		int32_t tri_norm = tri >> 3; // -256..255, avoids overflow
 		int32_t sine_ish = tri - ((tri * (tri_norm * tri_norm)) >> 17);
 
-		// shapeParam: 0=sine, 1023=tri, 2047=saw
 		int32_t out;
-		if (shapeParam < 1024)
+		if (foldAmt > 0)
 		{
-			// sine → triangle
-			out = (sine_ish * (1023 - shapeParam) + tri * shapeParam) >> 10;
+			// Outer zone: wavefold applied to sine.
+			// Threshold sweeps 2047→1024 as foldAmt goes 0→2047 (deeper fold = lower thresh).
+			// At foldAmt=2047, thresh=1024 which gives noticeable double-fold.
+			int32_t thresh = 2047 - (foldAmt >> 1); // 2047..1024
+			out = Fold(sine_ish, thresh);
 		}
 		else
 		{
-			int32_t t = shapeParam - 1024; // 0..1023
-			out = (tri * (1023 - t) + saw * t) >> 10;
+			// Inner zone: sine → triangle → saw
+			if (shapeParam < 1024)
+				out = (sine_ish * (1023 - shapeParam) + tri * shapeParam) >> 10;
+			else
+			{
+				int32_t t = shapeParam - 1024;
+				out = (tri * (1023 - t) + saw * t) >> 10;
+			}
 		}
 		return out;
 	}
@@ -307,17 +330,38 @@ public:
 
 		int32_t interval_inc = SemitoneInc(root_inc, semitone);
 
-		// --- Shape (V-curve: centre=saw, edges=sine) ---
+		// --- Shape (V-curve with wavefold at extremes) ---
+		// morphPos 0..4095 from main knob + CV In 2 offset
+		// Inner V: 512..3583 → shapeParam 0..2047..0 (sine→saw→sine)
+		// Outer zones: 0..511 and 3584..4095 → foldAmt 0..2047 (wavefold on sine)
 		int32_t morphPos = KnobVal(Knob::Main) + CVIn2();
 		if (morphPos < 0)    morphPos = 0;
 		if (morphPos > 4095) morphPos = 4095;
-		// shapeParam: 0=sine, 2047=saw
-		// V-curve: CCW(0)→sine, centre(2048)→saw, CW(4095)→sine
-		int32_t shapeParam;
-		if (morphPos < 2048)
-			shapeParam = morphPos;              // CCW half: 0=sine → 2047=saw
+
+		int32_t shapeParam, foldAmt;
+		static constexpr int32_t kFoldZone = 512; // outer zone width (each side)
+		if (morphPos < kFoldZone)
+		{
+			// CCW outer zone: sine → folded sine
+			shapeParam = 0;
+			foldAmt    = ((kFoldZone - 1 - morphPos) * 2047) / (kFoldZone - 1);
+		}
+		else if (morphPos > 4095 - kFoldZone)
+		{
+			// CW outer zone: sine → folded sine
+			shapeParam = 0;
+			foldAmt    = ((morphPos - (4095 - kFoldZone)) * 2047) / (kFoldZone - 1);
+		}
 		else
-			shapeParam = 4095 - morphPos;       // CW half:  2047=saw → 0=sine
+		{
+			// Inner V: map 512..3583 → 0..2047..0
+			foldAmt = 0;
+			int32_t inner = morphPos - kFoldZone; // 0..3071
+			if (inner < 1536)
+				shapeParam = (inner * 2047) / 1535; // 0→2047 (sine→saw)
+			else
+				shapeParam = ((3071 - inner) * 2047) / 1535; // 2047→0 (saw→sine)
+		}
 
 		// --- Detune ---
 		// Zone determined by physical knob (not CV-offset morphPos)
@@ -377,8 +421,8 @@ public:
 		{
 			phase[i] += uint32_t(voice_inc[i]);
 			if (voice_inc[i] == 0) continue; // silent extension voice
-			sum_L += ShapedOsc(phase[i],                    shapeParam);
-			sum_R += ShapedOsc(phase[i] + kStereoOff[i],   shapeParam);
+			sum_L += ShapedOsc(phase[i],                    shapeParam, foldAmt);
+			sum_R += ShapedOsc(phase[i] + kStereoOff[i],   shapeParam, foldAmt);
 		}
 		// Divide by 8 for headroom (not all 6 voices always active)
 		int32_t out_L = sum_L >> 3;
