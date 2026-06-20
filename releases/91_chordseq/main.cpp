@@ -211,7 +211,12 @@ public:
 
 	// Slew state — persistent voice increments (only used in slew mode)
 	int32_t  voiceIncSlew[6];
-	int32_t  slewShift;      // IIR shift: 0=instant, 6=fast, 9=slow, 12=glacial
+	int32_t  slewShift;      // IIR shift: 0=instant, 9=fast, 12=slow, 14=glacial
+
+	// PU2 / CV Out 2 envelope: downward ramp 50%→20%, rate set by zone
+	int32_t  pwmEnvelope;    // current duty level, 819..2048 (out of 4096)
+	int32_t  pwmEnvAcc;      // sub-sample accumulator for fractional steps (Q16)
+	int      lastZone;       // 0..3, detect zone change to reset envelope
 
 	// Startup
 	int32_t  sampleCount;
@@ -246,6 +251,9 @@ public:
 		modeLocked       = false;
 		bootAnim         = 0;
 		slewShift        = 0;
+		pwmEnvelope      = 2048;
+		pwmEnvAcc        = 0;
+		lastZone         = -1;
 		sampleCount      = 0;
 		fadeGain         = 0;
 	}
@@ -376,36 +384,56 @@ public:
 		int32_t physKnob = KnobVal(Knob::Main);
 		Switch  sw       = SwitchVal();
 
-		// --- Detune LFO (normal mode only) ---
-		int32_t lfoTri = 0;
+		// --- Zone → detune (normal mode) / slew rate (slew mode) ---
+		// Zone 0: Mid CCW, Zone 1: Mid CW, Zone 2: Up CW, Zone 3: Up CCW
+		int zone;
+		if (sw == Switch::Up)
+			zone = (physKnob < 2048) ? 3 : 2;
+		else
+			zone = (physKnob < 2048) ? 0 : 1;
+
+		// --- Detune (normal mode only) ---
 		int32_t detuneStep = 0;
 		if (!slewMode)
 		{
-			int32_t detuneAmtCents;
-			if (sw == Switch::Up)
-				detuneAmtCents = (physKnob < 2048) ? 15 : 10;
-			else
-				detuneAmtCents = (physKnob < 2048) ?  0 :  5;
-
+			static constexpr int32_t kDetuneCents[4] = { 0, 5, 10, 15 };
+			int32_t detuneAmtCents = kDetuneCents[zone];
 			detuneStep = int32_t((int64_t(root_inc) * detuneAmtCents) / 1200);
-
-			int32_t lfoRate = detuneAmtCents * 19884;
-			detunePhase += uint32_t(lfoRate);
-			int32_t dp = int32_t(detunePhase >> 17);
-			if (dp >= 0)
-				lfoTri = 16383 - (dp << 1 > 32767 ? 32767 : dp << 1);
-			else
-				lfoTri = 16383 + (dp << 1 < -32767 ? -32767 : dp << 1);
-			lfoTri = lfoTri >> 3;
 		}
 		else
 		{
-			// Slew mode: same four zones select slew rate
-			// Mid CCW=0 (instant), Mid CW=9 (fast), Up CW=12 (slow), Up CCW=14 (glacial)
-			if (sw == Switch::Up)
-				slewShift = (physKnob < 2048) ? 14 : 12;
-			else
-				slewShift = (physKnob < 2048) ?  0 :  9;
+			// Slew mode: zone → IIR shift
+			static constexpr int kSlewShift[4] = { 0, 9, 12, 14 };
+			slewShift = kSlewShift[zone];
+		}
+
+		// --- PU2 / CV Out 2 envelope: 50%→20% downward ramp ---
+		// Resets to 50% on zone change. Rate per zone:
+		// Zone 0 (Mid CCW): instant (snap to 20%)
+		// Zone 1 (Mid CW):  fast  (~100ms, step Q16 = 1229*65536/4800  ≈ 16776)
+		// Zone 2 (Up CW):   slow  (~500ms, step Q16 = 1229*65536/24000 ≈ 3356)
+		// Zone 3 (Up CCW):  glacial (~3s,  step Q16 = 1229*65536/144000 ≈ 559)
+		// 50% duty = 2048, 20% duty = 819, range = 1229 counts
+		static constexpr int32_t kEnvStep[4] = { 0, 16776, 3356, 559 };
+
+		if (zone != lastZone)
+		{
+			pwmEnvelope = 2048; // reset to 50% on zone change
+			pwmEnvAcc   = 0;
+			lastZone    = zone;
+		}
+
+		if (zone == 0)
+		{
+			pwmEnvelope = 819; // instant
+		}
+		else if (pwmEnvelope > 819)
+		{
+			pwmEnvAcc += kEnvStep[zone];
+			int32_t step = pwmEnvAcc >> 16;
+			pwmEnvAcc   &= 0xFFFF;
+			pwmEnvelope -= step;
+			if (pwmEnvelope < 819) pwmEnvelope = 819;
 		}
 
 		// --- Voice increment targets ---
@@ -461,11 +489,9 @@ public:
 		subPhase += uint32_t(root_inc >> 1);
 		PulseOut1(subPhase >> 31);
 
-		// --- Pulse Out 2: PWM square at root, duty animated by LFO ---
+		// --- Pulse Out 2: PWM square at root, duty ramps 50%→20% ---
 		pwmPhase += uint32_t(root_inc);
-		// Duty: 50% base ± ~20% from LFO (lfoTri range -2047..2047, duty range ~30–70%)
-		int32_t duty = 2048 + (lfoTri >> 2); // 1536..2559 out of 4096
-		PulseOut2(int32_t(pwmPhase >> 20) < duty);
+		PulseOut2(int32_t(pwmPhase >> 20) < pwmEnvelope);
 
 		// --- CV Out 1: root + interval as MIDI note (update every 512 samples) ---
 		static int32_t cvOutCounter = 0;
@@ -479,8 +505,10 @@ public:
 			CVOut1MIDINote(uint8_t(midiNote));
 		}
 
-		// --- CV Out 2: triangle LFO (0V when detune is off) ---
-		CVOut2(int16_t(lfoTri));
+		// --- CV Out 2: downward ramp matching PU2 duty (0V at 50%, -5V at 20%) ---
+		// pwmEnvelope 2048→819, map to 0→-2047
+		int32_t cv2 = -((2048 - pwmEnvelope) * 2047) / 1229;
+		CVOut2(int16_t(cv2));
 
 		// --- Boot mode detection (4800 samples = ~100ms for ADC to settle) ---
 		if (!modeLocked && sampleCount == 4800)
