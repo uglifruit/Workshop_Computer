@@ -204,6 +204,15 @@ public:
 	int32_t  overrideBaseVoct;      // voct_in at time of recall, for break detection
 	int32_t  overrideBaseInterval;
 
+	// Boot mode
+	bool     slewMode;       // true = slew mode (switch held Down at boot)
+	bool     modeLocked;     // true once boot switch has been sampled
+	int32_t  bootAnim;       // countdown for boot LED animation
+
+	// Slew state — persistent voice increments (only used in slew mode)
+	int32_t  voiceIncSlew[6];
+	int32_t  slewShift;      // IIR shift: 0=instant, 6=fast, 9=slow, 12=glacial
+
 	// Startup
 	int32_t  sampleCount;
 	int32_t  fadeGain;
@@ -211,6 +220,7 @@ public:
 	ChordSeq()
 	{
 		for (int i = 0; i < 6; i++) phase[i] = uint32_t(i) * (0xFFFFFFFFu / 6);
+		for (int i = 0; i < 6; i++) voiceIncSlew[i] = 0;
 		subPhase     = 0;
 		pwmPhase     = 0;
 		detunePhase  = 0;
@@ -232,6 +242,10 @@ public:
 		overrideSlot     = 0;
 		overrideBaseVoct     = 0;
 		overrideBaseInterval = 0;
+		slewMode         = false;
+		modeLocked       = false;
+		bootAnim         = 0;
+		slewShift        = 0;
 		sampleCount      = 0;
 		fadeGain         = 0;
 	}
@@ -363,55 +377,76 @@ public:
 				shapeParam = ((3071 - inner) * 2047) / 1535; // 2047→0 (saw→sine)
 		}
 
-		// --- Detune ---
-		// Zone determined by physical knob (not CV-offset morphPos)
+		// --- Zone (physical knob + switch) ---
+		// In normal mode: detune cents. In slew mode: slew rate.
 		int32_t physKnob = KnobVal(Knob::Main);
 		Switch  sw       = SwitchVal();
-		int32_t detuneAmtCents;
-		if (sw == Switch::Up)
-			detuneAmtCents = (physKnob < 2048) ? 15 : 10;
+
+		// --- Detune LFO (normal mode only) ---
+		int32_t lfoTri = 0;
+		int32_t detuneStep = 0;
+		if (!slewMode)
+		{
+			int32_t detuneAmtCents;
+			if (sw == Switch::Up)
+				detuneAmtCents = (physKnob < 2048) ? 15 : 10;
+			else
+				detuneAmtCents = (physKnob < 2048) ?  0 :  5;
+
+			detuneStep = int32_t((int64_t(root_inc) * detuneAmtCents) / 1200);
+
+			int32_t lfoRate = detuneAmtCents * 19884;
+			detunePhase += uint32_t(lfoRate);
+			int32_t dp = int32_t(detunePhase >> 17);
+			if (dp >= 0)
+				lfoTri = 16383 - (dp << 1 > 32767 ? 32767 : dp << 1);
+			else
+				lfoTri = 16383 + (dp << 1 < -32767 ? -32767 : dp << 1);
+			lfoTri = lfoTri >> 3;
+		}
 		else
-			detuneAmtCents = (physKnob < 2048) ?  0 :  5;
+		{
+			// Slew mode: same four zones select slew rate
+			// Mid CCW=0 (instant), Mid CW=6 (fast), Up CW=9 (slow), Up CCW=12 (glacial)
+			if (sw == Switch::Up)
+				slewShift = (physKnob < 2048) ? 12 : 9;
+			else
+				slewShift = (physKnob < 2048) ?  0 : 6;
+		}
 
-		// detuneStep: phase-increment units per "weight unit"
-		// root_inc * cents / 1200; safe integer for cents up to 18
-		int32_t detuneStep = int32_t((int64_t(root_inc) * detuneAmtCents) / 1200);
-
-		// --- Detune LFO ---
-		// Rate proportional to detuneAmtCents; 0 → static
-		// At max detune (18 cents) aim for ~2–4 Hz LFO
-		// lfoRate in uint32 increments: 4Hz at 48kHz = 4*2^32/48000 ≈ 357,913
-		int32_t lfoRate = detuneAmtCents * 19884; // 19884 ≈ 357913/18
-		detunePhase += uint32_t(lfoRate);
-		// Triangle LFO from detunePhase
-		int32_t dp = int32_t(detunePhase >> 17); // -16384..16383
-		int32_t lfoTri;
-		if (dp >= 0)
-			lfoTri = 16383 - (dp << 1 > 32767 ? 32767 : dp << 1);
-		else
-			lfoTri = 16383 + (dp << 1 < -32767 ? -32767 : dp << 1);
-		// Scale lfoTri to -2047..2047
-		lfoTri = lfoTri >> 3;
-
-		// --- Voice increments ---
-		// voice 0: root,     detune weight -2
-		// voice 1: interval, detune weight -1
-		// voice 2..5: extension voices, weights 0, 0, +1, +2
-		int32_t voice_inc[6];
-		voice_inc[0] = root_inc     + kDetuneWeight[0] * detuneStep;
-		voice_inc[1] = interval_inc + kDetuneWeight[1] * detuneStep;
+		// --- Voice increment targets ---
+		int32_t voice_inc_target[6];
+		voice_inc_target[0] = root_inc     + kDetuneWeight[0] * detuneStep;
+		voice_inc_target[1] = interval_inc + kDetuneWeight[1] * detuneStep;
 
 		for (int v = 0; v < 4; v++)
 		{
 			int8_t ext = extensions[semitone][preset][v];
 			if (ext == -128)
-			{
-				voice_inc[2 + v] = 0; // silent
-			}
+				voice_inc_target[2 + v] = 0;
 			else
 			{
 				int32_t ext_inc = SemitoneInc(root_inc, int(ext));
-				voice_inc[2 + v] = ext_inc + kDetuneWeight[2 + v] * detuneStep;
+				voice_inc_target[2 + v] = ext_inc + kDetuneWeight[2 + v] * detuneStep;
+			}
+		}
+
+		// --- Apply slew (slew mode) or use targets directly (normal mode) ---
+		int32_t voice_inc[6];
+		if (slewMode && slewShift > 0)
+		{
+			for (int i = 0; i < 6; i++)
+			{
+				voiceIncSlew[i] += (voice_inc_target[i] - voiceIncSlew[i]) >> slewShift;
+				voice_inc[i] = voiceIncSlew[i];
+			}
+		}
+		else
+		{
+			for (int i = 0; i < 6; i++)
+			{
+				voice_inc[i]     = voice_inc_target[i];
+				voiceIncSlew[i]  = voice_inc_target[i]; // keep slew state in sync when instant
 			}
 		}
 
@@ -420,7 +455,7 @@ public:
 		for (int i = 0; i < 6; i++)
 		{
 			phase[i] += uint32_t(voice_inc[i]);
-			if (voice_inc[i] == 0) continue; // silent extension voice
+			if (voice_inc_target[i] == 0 && voice_inc[i] == 0) continue;
 			sum_L += ShapedOsc(phase[i],                    shapeParam, foldAmt);
 			sum_R += ShapedOsc(phase[i] + kStereoOff[i],   shapeParam, foldAmt);
 		}
@@ -453,7 +488,20 @@ public:
 		// --- CV Out 2: triangle LFO (0V when detune is off) ---
 		CVOut2(int16_t(lfoTri));
 
+		// --- Boot mode detection (4800 samples = ~100ms for ADC to settle) ---
+		if (!modeLocked && sampleCount == 4800)
+		{
+			slewMode  = (sw == Switch::Down);
+			modeLocked = true;
+			bootAnim   = 9600; // ~200ms LED animation
+		}
+
 		// --- Switch tap/hold (boot guard: wait 4800 samples) ---
+		// In slew mode, Switch Down at boot selects the mode — don't treat it as a tap.
+		// downArmed starts true but we clear it if Down was held at boot.
+		if (slewMode && sampleCount <= 4800)
+			downArmed = false;
+
 		if (sampleCount > 4800)
 		{
 			if (sw == Switch::Down)
@@ -519,37 +567,58 @@ public:
 		}
 
 		// --- LEDs ---
-		static int32_t ledCounter = 0;
-		if (++ledCounter >= 256)
+		if (bootAnim > 0)
 		{
-			ledCounter = 0;
-			if (pendingStoreSlot >= 0)
+			// Boot animation: sweep LEDs to indicate mode.
+			// Normal mode: single LED sweeps 0→5 (one pass).
+			// Slew mode:   all LEDs pulse on then off (one flash).
+			bootAnim--;
+			int32_t pos = (9599 - bootAnim) * 6 / 9600; // 0..5
+			if (slewMode)
 			{
-				// Storing: LEDs 1,3,5 full bright; LEDs 0,2,4 = slot in binary
-				LedBrightness(0, (pendingStoreSlot & 1) ? 4095 : 0);
-				LedBrightness(1, 4095);
-				LedBrightness(2, (pendingStoreSlot & 2) ? 4095 : 0);
-				LedBrightness(3, 4095);
-				LedBrightness(4, (pendingStoreSlot & 4) ? 4095 : 0);
-				LedBrightness(5, 4095);
-			}
-			else if (chordOverride)
-			{
-				// Chord held: LEDs 0,2,4 full bright; LEDs 1,3,5 = slot in binary
-				LedBrightness(0, 4095);
-				LedBrightness(1, (overrideSlot & 1) ? 4095 : 0);
-				LedBrightness(2, 4095);
-				LedBrightness(3, (overrideSlot & 2) ? 4095 : 0);
-				LedBrightness(4, 4095);
-				LedBrightness(5, (overrideSlot & 4) ? 4095 : 0);
+				// All LEDs on for first half, off for second half
+				int32_t bright = (bootAnim > 4800) ? 4095 : 0;
+				for (int i = 0; i < 6; i++) LedBrightness(i, bright);
 			}
 			else
 			{
-				// Normal: Y position on LEDs 0–4, preset brightness on LED 5
-				int32_t ledIdx = semitone * 5 / 13;
-				for (int i = 0; i < 5; i++)
-					LedOn(i, i == ledIdx);
-				LedBrightness(5, uint16_t(preset * 819));
+				for (int i = 0; i < 6; i++) LedBrightness(i, i == pos ? 4095 : 0);
+			}
+		}
+		else
+		{
+			static int32_t ledCounter = 0;
+			if (++ledCounter >= 256)
+			{
+				ledCounter = 0;
+				if (pendingStoreSlot >= 0)
+				{
+					// Storing: LEDs 1,3,5 full bright; LEDs 0,2,4 = slot in binary
+					LedBrightness(0, (pendingStoreSlot & 1) ? 4095 : 0);
+					LedBrightness(1, 4095);
+					LedBrightness(2, (pendingStoreSlot & 2) ? 4095 : 0);
+					LedBrightness(3, 4095);
+					LedBrightness(4, (pendingStoreSlot & 4) ? 4095 : 0);
+					LedBrightness(5, 4095);
+				}
+				else if (chordOverride)
+				{
+					// Chord held: LEDs 0,2,4 full bright; LEDs 1,3,5 = slot in binary
+					LedBrightness(0, 4095);
+					LedBrightness(1, (overrideSlot & 1) ? 4095 : 0);
+					LedBrightness(2, 4095);
+					LedBrightness(3, (overrideSlot & 2) ? 4095 : 0);
+					LedBrightness(4, 4095);
+					LedBrightness(5, (overrideSlot & 4) ? 4095 : 0);
+				}
+				else
+				{
+					// Normal: Y position on LEDs 0–4, preset brightness on LED 5
+					int32_t ledIdx = semitone * 5 / 13;
+					for (int i = 0; i < 5; i++)
+						LedOn(i, i == ledIdx);
+					LedBrightness(5, uint16_t(preset * 819));
+				}
 			}
 		}
 
