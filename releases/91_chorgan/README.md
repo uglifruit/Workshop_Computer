@@ -9,7 +9,7 @@ Two modes are available, selected at boot:
 - **Normal mode** (default): detune/chorus across the six voices
 - **Slew mode** (hold Switch Down at power-on): chord changes glide — all six voices portamento independently to their new pitches
 
-In both modes, Pulse Out 2 and CV Out 2 fire a timed envelope on every chord event — a gate and a downward voltage ramp that can drive a VCA, filter, or any CV destination.
+In both modes, Pulse Out 2 and CV Out 2 fire a timed envelope on every chord event — a gate and a unipolar downward voltage ramp (0V to −5V) that can drive a VCA, filter, or any CV destination.
 
 ## Inputs
 
@@ -29,7 +29,7 @@ In both modes, Pulse Out 2 and CV Out 2 fire a timed envelope on every chord eve
 | Pulse Out 1 | Square wave one octave below root |
 | Pulse Out 2 | PWM envelope — resets to 50% duty on each chord event, ramps to 20% and holds |
 | CV Out 1 | Root pitch + voiced interval (1V/oct) — follows X knob, CV In 1, and chord override |
-| CV Out 2 | Downward voltage ramp — 0V on chord event, ramps to −5V; tracks Pulse Out 2 timing exactly |
+| CV Out 2 | Unipolar downward ramp — 0V on chord event, decays to −5V and holds; tracks Pulse Out 2 timing exactly |
 
 ## Controls
 
@@ -172,8 +172,8 @@ In normal operation, LEDs 0–4 show where Knob Y is across the 0–12 semitone 
 2. Patch Pulse Out 2 alongside it for a PWM version whose timbre narrows on each chord change
 
 **Chord-triggered VCA**
-1. Patch CV Out 2 to a VCA CV input (inverted if your VCA opens on positive voltage — CV Out 2 ramps downward)
-2. Each chord change opens the VCA briefly then lets it close — the ramp time is set by the zone
+1. Patch CV Out 2 to a VCA CV input — it outputs 0V on each chord event then ramps to −5V (unipolar, not bipolar)
+2. If your VCA opens on positive voltage, invert the signal first; if it opens on negative voltage, patch directly
 3. Use Switch Mid CCW for a quick ~250ms decay; Switch Up CCW for a slow ~3s fade
 
 **Chord-triggered filter**
