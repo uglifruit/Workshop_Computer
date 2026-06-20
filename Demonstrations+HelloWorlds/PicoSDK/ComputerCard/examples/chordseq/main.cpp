@@ -410,11 +410,14 @@ public:
 
 		// --- Zone → detune (normal mode) / slew rate (slew mode) ---
 		// Zone 0: Mid CCW, Zone 1: Mid CW, Zone 2: Up CW, Zone 3: Up CCW
+		// Switch Down (momentary tap) is not a stable zone — use zone 0 (~250ms envelope)
 		int zone;
 		if (sw == Switch::Up)
 			zone = (physKnob < 2048) ? 3 : 2;
-		else
+		else if (sw == Switch::Middle)
 			zone = (physKnob < 2048) ? 0 : 1;
+		else // Switch::Down — treat as zone 0 for ~250ms envelope rate
+			zone = 0;
 
 		// --- Detune (normal mode only) ---
 		int32_t detuneStep = 0;
@@ -445,20 +448,6 @@ public:
 		static constexpr int32_t kEnvStep[4] = { 6716, 16776, 3356, 559 };
 
 		lastZone = zone; // track zone but don't use it to trigger envelope
-		if (envTrigger)
-		{
-			pwmEnvelope = 2048;
-			pwmEnvAcc   = 0;
-		}
-
-		if (pwmEnvelope > 819)
-		{
-			pwmEnvAcc += kEnvStep[zone];
-			int32_t step = pwmEnvAcc >> 16;
-			pwmEnvAcc   &= 0xFFFF;
-			pwmEnvelope -= step;
-			if (pwmEnvelope < 819) pwmEnvelope = 819;
-		}
 
 		// --- Voice increment targets ---
 		int32_t voice_inc_target[6];
@@ -613,6 +602,22 @@ public:
 			chordOverride        = true;
 			chordPlayIdx         = (chordPlayIdx + 1) % chordCount;
 			envTrigger           = true;
+		}
+
+		// --- Envelope reset + decay (after all event handlers so tap/PU1 are included) ---
+		if (envTrigger)
+		{
+			pwmEnvelope = 2048;
+			pwmEnvAcc   = 0;
+		}
+
+		if (pwmEnvelope > 819)
+		{
+			pwmEnvAcc += kEnvStep[zone];
+			int32_t step = pwmEnvAcc >> 16;
+			pwmEnvAcc   &= 0xFFFF;
+			pwmEnvelope -= step;
+			if (pwmEnvelope < 819) pwmEnvelope = 819;
 		}
 
 		// --- LEDs ---
