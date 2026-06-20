@@ -438,20 +438,20 @@ public:
 		// Zone 2 (Up CW):   slow  (~500ms, step Q16 = 1229*65536/24000 ≈ 3356)
 		// Zone 3 (Up CCW):  glacial (~3s,  step Q16 = 1229*65536/144000 ≈ 559)
 		// 50% duty = 2048, 20% duty = 819, range = 1229 counts
-		static constexpr int32_t kEnvStep[4] = { 0, 16776, 3356, 559 };
+		// Zone 0 (Mid CCW): ~250ms = 12000 samples → 1229*65536/12000 ≈ 6716
+		// Zone 1 (Mid CW):  ~100ms = 4800  samples → 1229*65536/4800  ≈ 16776 (fast)
+		// Zone 2 (Up CW):   ~500ms = 24000 samples → 1229*65536/24000 ≈ 3356  (slow)
+		// Zone 3 (Up CCW):  ~3s    = 144000 samples→ 1229*65536/144000 ≈ 559  (glacial)
+		static constexpr int32_t kEnvStep[4] = { 6716, 16776, 3356, 559 };
 
-		if (zone != lastZone || envTrigger)
+		lastZone = zone; // track zone but don't use it to trigger envelope
+		if (envTrigger)
 		{
-			pwmEnvelope = 2048; // reset to 50% on zone change or chord event
+			pwmEnvelope = 2048;
 			pwmEnvAcc   = 0;
-			lastZone    = zone;
 		}
 
-		if (zone == 0)
-		{
-			pwmEnvelope = 819; // instant
-		}
-		else if (pwmEnvelope > 819)
+		if (pwmEnvelope > 819)
 		{
 			pwmEnvAcc += kEnvStep[zone];
 			int32_t step = pwmEnvAcc >> 16;
