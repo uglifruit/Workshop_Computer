@@ -461,8 +461,15 @@ public:
 			overrideInterval = chordSeq[idx].intervalSemi;
 			overridePreset   = chordSeq[idx].preset;
 			overrideSlot     = idx;
-			overrideBaseVoct     = voct_in;
-			overrideBaseInterval = semitone;
+			// Sample baseline from *physical* knob position (pre-override voct_in/semitone).
+			// Use the raw knob computation so a prior override doesn't poison the baseline.
+			int32_t physVoct = kPitchBase + (KnobVal(Knob::X) * kPitchRange >> 12) + CVIn1();
+			if (physVoct < 0)    physVoct = 0;
+			if (physVoct > 4095) physVoct = 4095;
+			int32_t physSemi = (KnobVal(Knob::Y) * 13) >> 12;
+			if (physSemi > 12) physSemi = 12;
+			overrideBaseVoct     = physVoct;
+			overrideBaseInterval = physSemi;
 			chordOverride        = true;
 			chordPlayIdx         = (chordPlayIdx + 1) % chordCount;
 		}
