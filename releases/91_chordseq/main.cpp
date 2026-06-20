@@ -173,7 +173,8 @@ public:
 	uint32_t detunePhase;
 
 	int      preset;
-	int      semitone;   // cached Y semitone, updated each sample
+	int      semitone;       // current Y semitone
+	int      lastSemitone;   // previous Y semitone, for change detection
 
 	// Switch tap/hold detection
 	int32_t  switchDownTimer;
@@ -217,6 +218,7 @@ public:
 	int32_t  pwmEnvelope;    // current duty level, 819..2048 (out of 4096)
 	int32_t  pwmEnvAcc;      // sub-sample accumulator for fractional steps (Q16)
 	int      lastZone;       // 0..3, detect zone change to reset envelope
+	int32_t  lastVoctSemi;   // last voct_in semitone bucket, for pitch-change detection
 
 	// Startup
 	int32_t  sampleCount;
@@ -229,8 +231,9 @@ public:
 		subPhase     = 0;
 		pwmPhase     = 0;
 		detunePhase  = 0;
-		preset       = 0;
-		semitone     = 0;
+		preset        = 0;
+		semitone      = 0;
+		lastSemitone  = -1;
 		switchDownTimer  = 0;
 		switchHandled    = false;
 		downArmed        = true;
@@ -254,6 +257,7 @@ public:
 		pwmEnvelope      = 2048;
 		pwmEnvAcc        = 0;
 		lastZone         = -1;
+		lastVoctSemi     = -1;
 		sampleCount      = 0;
 		fadeGain         = 0;
 	}
@@ -345,6 +349,26 @@ public:
 
 		int32_t interval_inc = SemitoneInc(root_inc, semitone);
 
+		// --- Envelope trigger detection ---
+		// Fires when: pitch crosses a semitone boundary, interval changes,
+		// preset changes (handled at event sites below), or chord recalled (same).
+		bool envTrigger = false;
+
+		// Pitch crossed a semitone boundary
+		int32_t voctSemi = voct_in / 28; // ~1 semitone per bucket
+		if (voctSemi != lastVoctSemi)
+		{
+			envTrigger   = true;
+			lastVoctSemi = voctSemi;
+		}
+
+		// Interval (Y knob) changed
+		if (semitone != lastSemitone)
+		{
+			envTrigger   = true;
+			lastSemitone = semitone;
+		}
+
 		// --- Shape (V-curve with wavefold at extremes) ---
 		// morphPos 0..4095 from main knob + CV In 2 offset
 		// Inner V: 512..3583 → shapeParam 0..2047..0 (sine→saw→sine)
@@ -416,9 +440,9 @@ public:
 		// 50% duty = 2048, 20% duty = 819, range = 1229 counts
 		static constexpr int32_t kEnvStep[4] = { 0, 16776, 3356, 559 };
 
-		if (zone != lastZone)
+		if (zone != lastZone || envTrigger)
 		{
-			pwmEnvelope = 2048; // reset to 50% on zone change
+			pwmEnvelope = 2048; // reset to 50% on zone change or chord event
 			pwmEnvAcc   = 0;
 			lastZone    = zone;
 		}
@@ -550,6 +574,7 @@ public:
 						// Short tap: advance preset
 						preset = (preset + 1) % 6;
 						if (chordOverride) overridePreset = preset;
+						envTrigger = true;
 					}
 					downArmed = false;
 				}
@@ -564,6 +589,7 @@ public:
 		{
 			preset = (preset + 1) % 6;
 			if (chordOverride) overridePreset = preset;
+			envTrigger = true;
 		}
 
 		// --- Pulse In 2: recall next stored chord (arm guard) ---
@@ -586,6 +612,7 @@ public:
 			overrideBaseInterval = physSemi;
 			chordOverride        = true;
 			chordPlayIdx         = (chordPlayIdx + 1) % chordCount;
+			envTrigger           = true;
 		}
 
 		// --- LEDs ---
