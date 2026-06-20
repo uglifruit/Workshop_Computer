@@ -6,8 +6,10 @@ Knob X and CV In 1 set the root pitch. Knob Y selects an interval above the root
 
 Two modes are available, selected at boot:
 
-- **Normal mode** (default): detune/chorus across the six voices, animated by an LFO
+- **Normal mode** (default): detune/chorus across the six voices
 - **Slew mode** (hold Switch Down at power-on): chord changes glide — all six voices portamento independently to their new pitches
+
+In both modes, Pulse Out 2 and CV Out 2 fire a timed envelope on every chord event — a gate and a downward voltage ramp that can drive a VCA, filter, or any CV destination.
 
 ## Inputs
 
@@ -25,9 +27,9 @@ Two modes are available, selected at boot:
 | Audio Out 1 | 6-voice mix |
 | Audio Out 2 | Same 6 voices with per-voice phase offsets — stereo width |
 | Pulse Out 1 | Square wave one octave below root |
-| Pulse Out 2 | PWM square at root frequency — duty cycle sweeps 30–70% at a rate set by detune amount |
+| Pulse Out 2 | PWM envelope — resets to 50% duty on each chord event, ramps to 20% and holds |
 | CV Out 1 | Root pitch + voiced interval (1V/oct) — follows X knob, CV In 1, and chord override |
-| CV Out 2 | Triangle LFO at the same rate as Pulse Out 2 — ±5V, 0V when detune is off |
+| CV Out 2 | Downward voltage ramp — 0V on chord event, ramps to −5V; tracks Pulse Out 2 timing exactly |
 
 ## Controls
 
@@ -52,23 +54,25 @@ CV In 2 offsets the knob position bipolarly but cannot push the timbre into a di
 
 **Switch + Main Knob position — Detune (normal mode) / Slew rate (slew mode)**
 
+The four zones also set the rate of the Pulse Out 2 / CV Out 2 envelope in both modes.
+
 In normal mode, four detune levels are selected by switch position and whether the Main knob is CCW or CW of centre:
 
-| Switch | Knob position | Outer voice detune |
-|--------|--------------|-------------------|
-| Mid | CCW of centre | 0 cents (clean) |
-| Mid | CW of centre | 5 cents |
-| Up | CCW of centre | 15 cents |
-| Up | CW of centre | 10 cents |
+| Switch | Knob position | Outer voice detune | Envelope ramp time |
+|--------|--------------|-------------------|--------------------|
+| Mid | CCW of centre | 0 cents (clean) | ~250ms |
+| Mid | CW of centre | 5 cents | ~100ms |
+| Up | CW of centre | 10 cents | ~500ms |
+| Up | CCW of centre | 15 cents | ~3s |
 
-In slew mode, the same four zones set the portamento rate:
+In slew mode, the same four zones set the portamento rate (detune is disabled):
 
-| Switch | Knob position | Slew rate |
-|--------|--------------|-----------|
-| Mid | CCW of centre | Instant |
-| Mid | CW of centre | Fast (~10ms) |
-| Up | CW of centre | Slow (~85ms) |
-| Up | CCW of centre | Glacial (~340ms) |
+| Switch | Knob position | Slew rate | Envelope ramp time |
+|--------|--------------|-----------|---------------------|
+| Mid | CCW of centre | Instant | ~250ms |
+| Mid | CW of centre | Fast (~200ms) | ~100ms |
+| Up | CW of centre | Slow (~700ms) | ~500ms |
+| Up | CCW of centre | Glacial (~3s) | ~3s |
 
 **Tap Switch Down — Cycle preset**
 A short tap (less than one second) advances the chord extension preset for voices 3–6. There are 6 presets per interval, cycling through different harmonic choices. A rising edge on Pulse In 1 does the same thing.
@@ -164,16 +168,26 @@ In normal operation, LEDs 0–4 show where Knob Y is across the 0–12 semitone 
 3. Tap Switch Down or trigger Pulse In 1 to change preset — pitches glide to the new chord
 
 **Sub-bass layer**
-1. Patch Pulse Out 1 to a VCA or filter — clean square one octave below root
-2. Patch Pulse Out 2 for a PWM version — duty cycle animates with detune amount
+1. Patch Pulse Out 1 to a filter or oscillator — clean square one octave below root
+2. Patch Pulse Out 2 alongside it for a PWM version whose timbre narrows on each chord change
+
+**Chord-triggered VCA**
+1. Patch CV Out 2 to a VCA CV input (inverted if your VCA opens on positive voltage — CV Out 2 ramps downward)
+2. Each chord change opens the VCA briefly then lets it close — the ramp time is set by the zone
+3. Use Switch Mid CCW for a quick ~250ms decay; Switch Up CCW for a slow ~3s fade
+
+**Chord-triggered filter**
+1. Patch CV Out 2 to a filter cutoff — the downward ramp darkens the filter after each chord change
+2. Combine with Audio Out into the filter input for a natural attack/decay envelope on the chord
+
+**Chord-triggered envelope (external)**
+1. Patch Pulse Out 2 into an external envelope generator's gate input
+2. The PWM duty resets to 50% on each chord event — use the wide phase as your gate high time
+3. CV Out 2 mirrors the same timing as a direct voltage ramp if you don't have an envelope generator
 
 **Interval-keyed filter or oscillator**
 1. Patch CV Out 1 to a filter cutoff or a second oscillator's 1V/oct input
-2. The CV tracks the voiced interval in semitones — use it to transpose an external voice in harmony
-
-**Chorus depth animation**
-1. Patch CV Out 2 to a VCA or delay time CV input
-2. The triangle LFO rate scales with your detune setting and is 0V when detune is off
+2. The CV tracks the root pitch plus voiced interval in semitones — use it to transpose an external voice in harmony with whatever Chorgan is playing
 
 ## Technical notes
 
@@ -182,11 +196,11 @@ In normal operation, LEDs 0–4 show where Knob Y is across the 0–12 semitone 
 - Detune zone determined by physical Main knob position; CV In 2 cannot cross zone boundaries
 - Stereo width via per-voice phase offsets on Audio Out 2 (0°, 15°, 30°, 45°, 60°, 75°)
 - Waveform: W-shape — pulse (CCW extreme) → sine (9 o'clock) → saw (12 o'clock) → sine (3 o'clock) → pulse (CW extreme)
-- Pulse Out 2 PWM: LFO rate proportional to detune amount — at 0 cents detune, duty is static at 50%
+- Pulse Out 2: PWM square at root pitch — resets to 50% duty on each chord event, ramps to 20% at zone-determined rate (~250ms / ~100ms / ~500ms / ~3s)
 - CV Out 1: (X knob + CV In 1) + voiced interval in 1V/oct — clamped to ±5V; follows chord override
-- CV Out 2: triangle LFO sharing phase with Pulse Out 2 — 0V at zero detune, ±5V peak at maximum
+- CV Out 2: downward ramp — 0V on chord event, decays to −5V at the same rate as Pulse Out 2; retriggers on pitch semitone change, interval change, preset change, or chord recall
 - Chord sequencer: stores pitch, interval, and preset — up to 8 chords; override breaks on >1 semitone movement from position at recall time
-- Slew mode: per-voice IIR portamento on phase increment; rates: instant / ~10ms / ~85ms / ~340ms
+- Slew mode: per-voice IIR portamento on phase increment; rates: instant / ~200ms / ~700ms / ~3s
 - 200ms startup holdoff before audio begins — eliminates power-on click
 
 ## Credits
