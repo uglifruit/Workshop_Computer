@@ -4,7 +4,7 @@
 //   CV In 2       : Timbre offset — bipolar, offsets Main knob position
 //   Knob X        : Root pitch (C3–C6)
 //   Knob Y        : First interval above root — 13 steps, unison to octave
-//   Main Knob     : Oscillator shape — V-curve: centre=saw, edges=sine
+//   Main Knob     : Oscillator shape — V-curve: centre=saw, 9/3=sine, edges=pulse
 //   Switch Up     : Detune × 2 (12 or 18 cents depending on knob side)
 //   Switch Mid    : Detune normal (0 or 6 cents depending on knob side)
 //   Switch Down   : Tap = advance chord extension preset
@@ -250,24 +250,11 @@ public:
 		fadeGain         = 0;
 	}
 
-	// Wavefolder: reflects signal at ±thresh, applied twice for 2 folds.
-	// thresh in same units as x (-2047..2047). Returns folded value.
-	static int32_t Fold(int32_t x, int32_t thresh)
-	{
-		// fold 1
-		if (x >  thresh) x =  (thresh << 1) - x;
-		if (x < -thresh) x = -(thresh << 1) - x;
-		// fold 2
-		if (x >  thresh) x =  (thresh << 1) - x;
-		if (x < -thresh) x = -(thresh << 1) - x;
-		return x;
-	}
-
 	// Shaped oscillator.
 	// shapeParam 0..2047: 0=sine, 1023=triangle, 2047=saw  (inner V zone)
-	// foldAmt    0..2047: 0=no fold, 2047=full fold (outer zone, applied to sine)
+	// pulseAmt   0..2047: 0=sine edge, 2047=narrow pulse    (outer zone)
 	// Returns -2047..2047.
-	int32_t __not_in_flash_func(ShapedOsc)(uint32_t ph, int32_t shapeParam, int32_t foldAmt)
+	int32_t __not_in_flash_func(ShapedOsc)(uint32_t ph, int32_t shapeParam, int32_t pulseAmt)
 	{
 		// Sawtooth: phase 0→-2048, 0x80000000→0, 0xFFFFFFFF→2047
 		int32_t saw = int32_t(ph >> 20) - 2048;
@@ -284,13 +271,19 @@ public:
 		int32_t sine_ish = tri - ((tri * (tri_norm * tri_norm)) >> 17);
 
 		int32_t out;
-		if (foldAmt > 0)
+		if (pulseAmt > 0)
 		{
-			// Outer zone: wavefold applied to sine.
-			// Threshold sweeps 2047→1024 as foldAmt goes 0→2047 (deeper fold = lower thresh).
-			// At foldAmt=2047, thresh=1024 which gives noticeable double-fold.
-			int32_t thresh = 2047 - (foldAmt >> 1); // 2047..1024
-			out = Fold(sine_ish, thresh);
+			// Outer zone: pulse wave. Duty narrows as pulseAmt increases.
+			// threshold sweeps from 0 (50% duty) to -1900 (~5% duty) as pulseAmt → 2047.
+			// saw < threshold → high (+2047), else low (-2047).
+			int32_t threshold = -(pulseAmt * 1900) / 2047; // 0 → -1900
+			int32_t pulse = (saw < threshold) ? 2047 : -2047;
+			// Crossfade sine→pulse over first quarter of pulseAmt to avoid a hard click
+			// at the zone boundary.
+			if (pulseAmt < 512)
+				out = (sine_ish * (511 - pulseAmt) + pulse * pulseAmt) >> 9;
+			else
+				out = pulse;
 		}
 		else
 		{
@@ -352,25 +345,25 @@ public:
 		if (morphPos < 0)    morphPos = 0;
 		if (morphPos > 4095) morphPos = 4095;
 
-		int32_t shapeParam, foldAmt;
-		static constexpr int32_t kFoldZone = 512; // outer zone width (each side)
-		if (morphPos < kFoldZone)
+		int32_t shapeParam, pulseAmt;
+		static constexpr int32_t kOuterZone = 512; // outer zone width (each side)
+		if (morphPos < kOuterZone)
 		{
-			// CCW outer zone: sine → folded sine
+			// CCW outer zone: sine → narrow pulse
 			shapeParam = 0;
-			foldAmt    = ((kFoldZone - 1 - morphPos) * 2047) / (kFoldZone - 1);
+			pulseAmt   = ((kOuterZone - 1 - morphPos) * 2047) / (kOuterZone - 1);
 		}
-		else if (morphPos > 4095 - kFoldZone)
+		else if (morphPos > 4095 - kOuterZone)
 		{
-			// CW outer zone: sine → folded sine
+			// CW outer zone: sine → narrow pulse
 			shapeParam = 0;
-			foldAmt    = ((morphPos - (4095 - kFoldZone)) * 2047) / (kFoldZone - 1);
+			pulseAmt   = ((morphPos - (4095 - kOuterZone)) * 2047) / (kOuterZone - 1);
 		}
 		else
 		{
-			// Inner V: map 512..3583 → 0..2047..0
-			foldAmt = 0;
-			int32_t inner = morphPos - kFoldZone; // 0..3071
+			// Inner V: map 512..3583 → 0..2047..0 (sine→saw→sine)
+			pulseAmt = 0;
+			int32_t inner = morphPos - kOuterZone; // 0..3071
 			if (inner < 1536)
 				shapeParam = (inner * 2047) / 1535; // 0→2047 (sine→saw)
 			else
@@ -407,11 +400,11 @@ public:
 		else
 		{
 			// Slew mode: same four zones select slew rate
-			// Mid CCW=0 (instant), Mid CW=6 (fast), Up CW=9 (slow), Up CCW=12 (glacial)
+			// Mid CCW=0 (instant), Mid CW=9 (fast), Up CW=12 (slow), Up CCW=14 (glacial)
 			if (sw == Switch::Up)
-				slewShift = (physKnob < 2048) ? 12 : 9;
+				slewShift = (physKnob < 2048) ? 14 : 12;
 			else
-				slewShift = (physKnob < 2048) ?  0 : 6;
+				slewShift = (physKnob < 2048) ?  0 :  9;
 		}
 
 		// --- Voice increment targets ---
@@ -456,8 +449,8 @@ public:
 		{
 			phase[i] += uint32_t(voice_inc[i]);
 			if (voice_inc_target[i] == 0 && voice_inc[i] == 0) continue;
-			sum_L += ShapedOsc(phase[i],                    shapeParam, foldAmt);
-			sum_R += ShapedOsc(phase[i] + kStereoOff[i],   shapeParam, foldAmt);
+			sum_L += ShapedOsc(phase[i],                    shapeParam, pulseAmt);
+			sum_R += ShapedOsc(phase[i] + kStereoOff[i],   shapeParam, pulseAmt);
 		}
 		// Divide by 8 for headroom (not all 6 voices always active)
 		int32_t out_L = sum_L >> 3;
