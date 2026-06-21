@@ -9,7 +9,7 @@ Two modes are available, selected at boot:
 - **Normal mode** (default): detune/chorus across the six voices
 - **Slew mode** (hold Switch Down at power-on): chord changes glide — all six voices portamento independently to their new pitches
 
-In both modes, Pulse Out 2 and CV Out 2 fire a timed envelope on every chord event — a gate and a unipolar downward voltage ramp (0V to −5V) that can drive a VCA, filter, or any CV destination.
+In both modes, Pulse Out 2 and CV Out 2 fire a timed envelope on every chord event — a gate and a unipolar downward voltage ramp (+5V to 0V) that can drive a VCA, filter, or act as a trigger.
 
 ## Inputs
 
@@ -29,7 +29,7 @@ In both modes, Pulse Out 2 and CV Out 2 fire a timed envelope on every chord eve
 | Pulse Out 1 | Square wave one octave below root |
 | Pulse Out 2 | PWM envelope — resets to 50% duty on each chord event, ramps to 20% and holds |
 | CV Out 1 | Root pitch + voiced interval (1V/oct) — follows X knob, CV In 1, and chord override |
-| CV Out 2 | Unipolar downward ramp — 0V on chord event, decays to −5V and holds; tracks Pulse Out 2 timing exactly |
+| CV Out 2 | Unipolar downward ramp — +5V on chord event, decays to 0V and holds; tracks Pulse Out 2 timing exactly |
 
 ## Controls
 
@@ -172,8 +172,8 @@ In normal operation, LEDs 0–4 show where Knob Y is across the 0–12 semitone 
 2. Patch Pulse Out 2 alongside it for a PWM version whose timbre narrows on each chord change
 
 **Chord-triggered VCA**
-1. Patch CV Out 2 to a VCA CV input — it outputs 0V on each chord event then ramps to −5V (unipolar, not bipolar)
-2. If your VCA opens on positive voltage, invert the signal first; if it opens on negative voltage, patch directly
+1. Patch CV Out 2 to a VCA CV input — it fires +5V on each chord event then ramps down to 0V
+2. Works directly with any VCA that opens on positive voltage; no inversion needed
 3. Use Switch Mid CCW for a quick ~250ms decay; Switch Up CCW for a slow ~3s fade
 
 **Chord-triggered filter**
@@ -198,7 +198,7 @@ In normal operation, LEDs 0–4 show where Knob Y is across the 0–12 semitone 
 - Waveform: W-shape — pulse (CCW extreme) → sine (9 o'clock) → saw (12 o'clock) → sine (3 o'clock) → pulse (CW extreme)
 - Pulse Out 2: PWM square at root pitch — resets to 50% duty on each chord event, ramps to 20% at zone-determined rate (~250ms / ~100ms / ~500ms / ~3s)
 - CV Out 1: (X knob + CV In 1) + voiced interval in 1V/oct — clamped to ±5V; follows chord override
-- CV Out 2: downward ramp — 0V on chord event, decays to −5V at the same rate as Pulse Out 2; retriggers on pitch semitone change, interval change, preset change, or chord recall
+- CV Out 2: unipolar downward ramp — +5V on chord event, decays to 0V at the same rate as Pulse Out 2; retriggers on pitch semitone change, interval change, preset change, or chord recall
 - Chord sequencer: stores pitch, interval, and preset — up to 8 chords; override breaks on >1 semitone movement from position at recall time
 - Slew mode: per-voice IIR portamento on phase increment; rates: instant / ~200ms / ~700ms / ~3s
 - 200ms startup holdoff before audio begins — eliminates power-on click

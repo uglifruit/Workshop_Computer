@@ -518,9 +518,9 @@ public:
 			CVOut1MIDINote(uint8_t(midiNote));
 		}
 
-		// --- CV Out 2: downward ramp matching PU2 duty (0V at 50%, -5V at 20%) ---
-		// pwmEnvelope 2048→819, map to 0→-2047
-		int32_t cv2 = -((2048 - pwmEnvelope) * 2047) / 1229;
+		// --- CV Out 2: downward ramp matching PU2 duty (+5V at chord event, decays to 0V) ---
+		// pwmEnvelope 2048→819, map to 2047→0
+		int32_t cv2 = ((pwmEnvelope - 819) * 2047) / 1229;
 		CVOut2(int16_t(cv2));
 
 		// --- Boot mode detection (4800 samples = ~100ms for ADC to settle) ---
