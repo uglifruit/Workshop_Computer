@@ -1,4 +1,4 @@
-# Chorgan
+# Chorgan Sequencer
 
 Six-voice morphing chord synthesizer with built-in chord sequencer for the Workshop Computer.
 
