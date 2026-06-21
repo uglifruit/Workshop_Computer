@@ -2,7 +2,13 @@
 
 Six-voice morphing chord synthesizer with built-in chord sequencer for the Workshop Computer.
 
-Knob X and CV In 1 set the root pitch. Knob Y selects an interval above the root in semitone steps. Four extension voices fill out the chord — the extensions are drawn from the same harmonic world as the chosen interval, so a perfect 5th stays open and powerful, a minor 3rd stays dark, a major 3rd stays bright. The Main knob morphs all six voices through sine, triangle, saw, and narrow pulse. A built-in chord sequencer stores up to eight chords and steps through them on rising edges at Pulse In 2.
+Knob X and CV In 1 set the root pitch. 
+
+Knob Y selects an interval above the root in semitone steps.
+
+ Four extension voices fill out the chord — the extensions are drawn from the same harmonic world as the chosen interval. (A perfect 5th stays open and powerful, a minor 3rd stays dark, a major 3rd stays bright. The Main knob morphs all six voices through sine, triangle, saw, and narrow pulse).
+
+A built-in chord sequencer stores up to eight chords and steps through them on rising edges at Pulse In 2.
 
 Two modes are available, selected at boot:
 
@@ -211,10 +217,6 @@ Built on the [Workshop Computer](https://github.com/TomWhitwell/Workshop_Compute
 
 V/oct lookup table (`voct_vals`) from [Utility Pair](https://github.com/chrisgjohnson/Utility-Pair) by Chris Johnson, used with permission under the original licence.
 
-
 Waveform morphing concept inspired by [Mutable Instruments Braids](https://mutable-instruments.net/modules/braids/) (Émilie Gillet).
 
-Name and concept inspired by the [Music Thing Modular Chord Organ](https://github.com/TomWhitwell/Chord-Organ).
-
----
 Licensed under [Creative Commons Attribution-ShareAlike 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
