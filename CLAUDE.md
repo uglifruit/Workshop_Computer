@@ -117,6 +117,58 @@ The shared `Demonstrations+HelloWorlds/PicoSDK/ComputerCard/ComputerCard.h` has 
 - `SwitchVal()` is a **level** — it reads the current position every sample. Use a state machine (armed/timer) for tap vs hold detection
 - `PulseIn1RisingEdge()` / `PulseIn2RisingEdge()` detect **edges** (one sample true). `PulseIn1()` / `PulseIn2()` are **levels** (true while high). Use the right one — mixing them up causes missed or repeated triggers
 - **PulseIn2 boot guard**: if PU2 is high at boot, `RisingEdge()` never fires on that first edge. But if your code only watches `RisingEdge()`, a high-at-boot input will silently never arm. Add an explicit "must see low first" guard: `if (!PulseIn2()) pu2Armed = true;`
+- **Switch::Middle** is the correct enum value for the centre position — NOT `Switch::Mid` (causes a compile error)
+- **Switch Down is not a zone**: when the momentary switch is held Down, it is not Up or Middle — if you have zone logic based on switch position, handle `Switch::Down` explicitly or it will fall through to the wrong zone
+
+### Switch tap vs hold — working pattern (from Chorgan)
+
+The Switch Down button must distinguish: short tap (< 1s = cycle preset) vs long hold (≥ 1s = store chord). The working idiom:
+
+```cpp
+// Class members:
+int32_t switchDownTimer = 0;  // counts samples while Down held
+bool    downArmed       = true; // false until switch has been released once
+int32_t pendingStoreSlot = -1;  // set at exactly 1s, committed on release
+
+// In ProcessSample(), after boot guard (sampleCount > 4800):
+Switch sw = SwitchVal();
+if (sw == Switch::Down) {
+    switchDownTimer++;
+    if (switchDownTimer == 48000 && downArmed)  // exactly 1 second
+        pendingStoreSlot = chordWriteIdx;        // mark pending (LED changes here)
+} else {
+    if (downArmed) {
+        if (pendingStoreSlot >= 0) {
+            // HOLD: commit store on release
+            storeChord();
+            pendingStoreSlot = -1;
+        } else if (switchDownTimer > 0 && switchDownTimer < 48000) {
+            // TAP: short press
+            advancePreset();
+        }
+        downArmed = false;
+    }
+    if (switchDownTimer == 0) downArmed = true;  // re-arm only after full release
+    switchDownTimer = 0;
+}
+```
+
+Key points:
+- The pending action is **committed on release**, not on the threshold crossing — this prevents accidental fires if the user holds slightly too long
+- `downArmed` prevents the boot Switch Down press (for mode selection) from being treated as a tap
+- LED feedback should change at the 1-second threshold so the user knows to release
+
+### CV In 1 — 1V/oct input scaling (critical, hard-won)
+
+This was a major sticking point in Chorgan development. The correct scaling:
+
+- `CVIn1()` returns −2048..2047. **0V = 0**, not 2048. Above 0V is positive, below is negative.
+- **1V/oct**: the hardware gives **409 counts per volt**, so **409 counts = 1 octave = 12 semitones**
+- The constant in code is `kCountsPerOctave = 409`
+- This was wrong for a long time (341 was used — a common mistake from confusing the 4096-count range with the V/oct scale). The symptom was intervals sounding slightly sharp/flat and the V/oct tracking drifting noticeably over several octaves.
+- **To convert CVIn1 to a semitone offset**: `int32_t semi = (CVIn1() * 12) / 409`
+- **To add CVIn1 to a knob-based pitch** (summing both): read both, sum, then convert once — don't convert each separately and add.
+- `ExpVoct(int32_t in)` takes a value in the combined knob+CV space (0..4095 for the knob range, extended by CV). It uses a 341-entry lookup table (`voct_vals[341]`) where each entry = 1 semitone and the table covers ~C0..C8. Input is clamped before lookup.
 
 ### CV and audio scaling
 - `CVOut1/2` accepts −2048..2047, maps to **±5V** (not ±6V — the ±6V figure in the API table is the rail, not the useful range)
@@ -129,7 +181,7 @@ The shared `Demonstrations+HelloWorlds/PicoSDK/ComputerCard/ComputerCard.h` has 
 - Correct approach: `>> 16` gives a 16-bit counter (0–65535), fold at 32768, `>> 1` to scale — both halves symmetric 0→16383→0
 
 ### Self-contained releases/ folder
-Every `releases/<number>_<name>/` folder intended for Tom's card listing should be **fully self-contained** (see `releases/83_chorgan/` as the reference):
+Every `releases/<number>_<name>/` folder intended for Tom's card listing should be **fully self-contained** (see `releases/91_chorgan/` as the reference):
 - `ComputerCard.h` — copy of **our fixed version** (not upstream's)
 - `CMakeLists.txt` — adapted from `releases/60_markov/CMakeLists.txt` (change `CARD_NAME`)
 - `pico_sdk_import.cmake` — copy verbatim from `releases/60_markov/`
@@ -152,6 +204,13 @@ Clock-synced beat-repeater (Glitch mode) + breakbeat slicer (Stutter mode). Mode
 - All 6 inputs and 6 outputs used
 - Integer-only DSP, 224KB circular buffer (112,000 samples = 2.33s), ~89.5% RAM
 - ADC settle gotcha: SwitchVal() reads 0 (= Switch::Down) at boot — wait 4800 samples before reading mode
+
+### Chorgan (`examples/chordseq/`) — v1.0.0
+6-voice morphing chord synthesizer with chord extension presets and built-in 8-chord sequencer. Two boot modes: normal (detune/chorus) and slew (portamento). Chord-triggered envelope on PU2/CV2.
+- Released at: `releases/91_chorgan/`
+- PR to Tom's repo: #194 (merged 2026-06-22)
+- Integer-only DSP, 6 phase accumulators, V/oct lookup table from Chris Johnson's Utility Pair
+- Key lesson: CV In 1 V/oct scaling is 409 counts/octave (not 341) — see CV In 1 section above
 
 ### Renaissance (`examples/spread/`) — v1.0.0
 6-voice harmonic spread oscillator. CV2/Knob Y morphs through stacked intervals (unison → m3 → M3 → 5ths → octaves) with landmark snapping. Knob X = detune (when CV1 patched). Main knob = timbre (sine → triangle → saw).
