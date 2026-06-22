@@ -25,6 +25,6 @@ target_compile_options(${CARD_NAME} PRIVATE -Wdouble-promotion -Wfloat-conversio
 target_link_options(${CARD_NAME} PRIVATE -Wl,--print-memory-usage)
 target_compile_definitions(${CARD_NAME} PRIVATE PICO_XOSC_STARTUP_DELAY_MULTIPLIER=64)
 target_include_directories(${CARD_NAME} PUBLIC ${CMAKE_CURRENT_LIST_DIR})
-target_link_libraries(${CARD_NAME} pico_unique_id pico_stdlib hardware_dma hardware_i2c hardware_pwm hardware_adc hardware_spi)
+target_link_libraries(${CARD_NAME} pico_unique_id pico_stdlib hardware_dma hardware_i2c hardware_pwm hardware_adc hardware_spi pico_multicore)
 pico_add_extra_outputs(${CARD_NAME})
 pico_enable_stdio_usb(${CARD_NAME} 0)

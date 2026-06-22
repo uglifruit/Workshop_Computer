@@ -1,103 +1,138 @@
 """
-Convert audio clips to mono 8-bit unsigned PCM C header arrays.
-Run once from this directory to regenerate clips.h.
+Convert audio clips to C header arrays for OffAir.
 
-Interference clips: 8kHz (lo-fi radio character)
-Broadcast (altboot) clips: 11025Hz (higher quality, native WAV rate)
-Output format: uint8_t, 0=min, 128=silence, 255=max (offset binary)
+Interference clips:  8kHz,   uint8   (offset binary, 128=silence)
+Broadcast clips:    11025Hz, 12-bit packed signed (2 samples per 3 bytes)
+
+12-bit packing layout (A=sample[i], B=sample[i+1]):
+  byte0 = A[11:4]
+  byte1 = (A[3:0]<<4) | B[11:8]
+  byte2 = B[7:0]
+
+Unpack in C:
+  int32_t a = (int32_t)((byte0<<4)|(byte1>>4));  if(a>=2048)a-=4096;
+  int32_t b = (int32_t)(((byte1&0xF)<<8)|byte2); if(b>=2048)b-=4096;
+
+Run from this directory to regenerate clips.h.
 """
 
 import miniaudio
 import numpy as np
-import struct
 import os
 
-TARGET_SR_INTF  = 8000   # interference clips
-TARGET_SR_BCAST = 11025  # broadcast/altboot clips (native WAV rate)
+TARGET_SR_INTF  = 8000
+TARGET_SR_BCAST = 11025
+MAX_BCAST_SEC   = 25
 
-# (filename, start_sec, max_sec, var_name, description, sample_rate)
+# (filename, start_sec, max_sec, var_name, description, sample_rate, bits)
 CLIPS = [
     # AM band interference — voice / numbers
-    ("POL-2015-05-18-1310utc.mp3",                     0,  25, "clip_pol",   "Polish numbers station",   TARGET_SR_INTF),
-    ("UM10-Q7JN-2015-02-09-1604utc-3956khz.mp3",       0,  15, "clip_um10",  "UM10 voice/tones",         TARGET_SR_INTF),
+    ("POL-2015-05-18-1310utc.mp3",                          0, 25, "clip_pol",   "Polish numbers station",    TARGET_SR_INTF,  8),
+    ("UM10-Q7JN-2015-02-09-1604utc-3956khz.mp3",            0, 15, "clip_um10",  "UM10 voice/tones",          TARGET_SR_INTF,  8),
     # SW band interference — data / digital signals
-    ("F03-2017-08-21-0940-0945utc-AFSK400-960_10210khz.mp3", 5, 25, "clip_f03", "AFSK data signal",      TARGET_SR_INTF),
-    ("XT2-2232.5khz.mp3",                               0,  20, "clip_xt2",   "XT2 unidentified digital", TARGET_SR_INTF),
+    ("F03-2017-08-21-0940-0945utc-AFSK400-960_10210khz.mp3",5, 25, "clip_f03",   "AFSK data signal",          TARGET_SR_INTF,  8),
+    ("XT2-2232.5khz.mp3",                                   0, 20, "clip_xt2",   "XT2 unidentified digital",  TARGET_SR_INTF,  8),
     # LW band interference — tones / polytones
-    ("Unid-polytone-2010-02-17.mp3",                   0,  25, "clip_poly",  "Unidentified polytone",     TARGET_SR_INTF),
-    ("MX-L-2013-10-16-1530utc-bygwraspe.mp3",           0,  11, "clip_mxl",   "MX-L tone sequence",       TARGET_SR_INTF),
-    # Altboot broadcast stations (higher quality WAVs)
-    ("Demo1.wav",                                        0, 999, "clip_demo1", "Broadcast station 1",      TARGET_SR_BCAST),
-    ("Demo2.wav",                                        0, 999, "clip_demo2", "Broadcast station 2",      TARGET_SR_BCAST),
+    ("Unid-polytone-2010-02-17.mp3",                        0, 25, "clip_poly",  "Unidentified polytone",     TARGET_SR_INTF,  8),
+    ("MX-L-2013-10-16-1530utc-bygwraspe.mp3",               0, 11, "clip_mxl",   "MX-L tone sequence",        TARGET_SR_INTF,  8),
+    # Altboot broadcast stations — 12-bit packed signed
+    ("Demo1.wav",  0, MAX_BCAST_SEC, "clip_demo1", "Broadcast station 1", TARGET_SR_BCAST, 12),
+    ("Demo2.wav",  0, MAX_BCAST_SEC, "clip_demo2", "Broadcast station 2", TARGET_SR_BCAST, 12),
 ]
 
 FOLDER = "C:/Users/andyu/Downloads/NumbersStationsEtc/"
 
-def decode_clip(filename, start_sec, max_sec, target_sr):
+def decode_float(filename, start_sec, max_sec, target_sr):
     path = FOLDER + filename
-    # Decode full file as float32, resampling to target_sr
     decoded = miniaudio.decode_file(path, output_format=miniaudio.SampleFormat.FLOAT32,
                                     nchannels=1, sample_rate=target_sr)
-    samples = np.frombuffer(decoded.samples, dtype=np.float32)
-
+    samples = np.frombuffer(decoded.samples, dtype=np.float32).copy()
     start_sample = int(start_sec * target_sr)
     end_sample   = start_sample + int(max_sec * target_sr)
     if end_sample > len(samples):
         end_sample = len(samples)
     samples = samples[start_sample:end_sample]
-
-    # Normalise to -1..1
     peak = np.max(np.abs(samples))
     if peak > 0:
         samples = samples / peak * 0.95
+    return samples
 
-    # Convert to uint8 offset binary (128 = silence)
-    samples_u8 = np.clip((samples * 127.0 + 128.0), 0, 255).astype(np.uint8)
-    return samples_u8
+def to_u8(samples):
+    return np.clip((samples * 127.0 + 128.0), 0, 255).astype(np.uint8)
 
-def array_to_c(data, var_name, description, sr):
+def to_12bit_packed(samples):
+    s12 = np.clip(np.round(samples * 2047.0), -2048, 2047).astype(np.int16)
+    if len(s12) % 2 != 0:
+        s12 = np.append(s12, [0])
+    packed = bytearray()
+    for i in range(0, len(s12), 2):
+        a = int(s12[i])   & 0xFFF
+        b = int(s12[i+1]) & 0xFFF
+        packed.append((a >> 4) & 0xFF)
+        packed.append(((a & 0xF) << 4) | ((b >> 8) & 0xF))
+        packed.append(b & 0xFF)
+    return packed, len(s12)
+
+def array_to_c_u8(data, var_name, description, sr):
     n = len(data)
-    secs = n / sr
     lines = [
-        f"// {description}  ({secs:.1f}s at {sr}Hz, {n} samples = {n//1024}KB)",
+        f"// {description}  ({n/sr:.1f}s at {sr}Hz, {n} samples = {n//1024}KB)",
         f"static const uint8_t {var_name}[{n}] PROGMEM_OR_CONST = {{",
     ]
-    # 16 bytes per row
     for i in range(0, n, 16):
         row = data[i:i+16]
         lines.append("    " + ", ".join(f"0x{b:02X}" for b in row) + ",")
-    lines.append("};")
-    lines.append(f"static const uint32_t {var_name}_len = {n};")
-    lines.append(f"static const uint32_t {var_name}_sr  = {sr};")
-    lines.append("")
+    lines += ["};", f"static const uint32_t {var_name}_len = {n};",
+              f"static const uint32_t {var_name}_sr  = {sr};", ""]
+    return "\n".join(lines)
+
+def array_to_c_12bit(packed_bytes, sample_count, var_name, description, sr):
+    nb = len(packed_bytes)
+    lines = [
+        f"// {description}  ({sample_count/sr:.1f}s at {sr}Hz, {sample_count} samples, 12-bit packed = {nb//1024}KB)",
+        f"static const uint8_t {var_name}[{nb}] PROGMEM_OR_CONST = {{",
+    ]
+    for i in range(0, nb, 12):
+        row = packed_bytes[i:i+12]
+        lines.append("    " + ", ".join(f"0x{b:02X}" for b in row) + ",")
+    lines += ["};",
+              f"static const uint32_t {var_name}_len = {sample_count};  // samples, not bytes",
+              f"static const uint32_t {var_name}_sr  = {sr};", ""]
     return "\n".join(lines)
 
 # ---- main ----
 out_parts = [
-    "// clips.h — baked numbers-station audio for OffAir",
+    "// clips.h — baked audio for OffAir",
     "// Auto-generated by convert_clips.py — do not edit by hand",
-    "// 8kHz mono unsigned 8-bit PCM.  128 = silence.",
+    "// Interference clips: 8kHz uint8, 128=silence",
+    "// Broadcast clips:    11025Hz 12-bit packed signed (2 samples per 3 bytes)",
     "//",
     "#pragma once",
     "#include <stdint.h>",
     "",
-    "// Pico SDK: store large const arrays in flash via __in_flash() or just const",
     "#define PROGMEM_OR_CONST",
     "",
 ]
 
 total_kb = 0
-for (filename, start_sec, max_sec, var_name, description, sr) in CLIPS:
-    print(f"Converting {filename} [{start_sec}s..+{max_sec}s] @ {sr}Hz...")
-    data = decode_clip(filename, start_sec, max_sec, sr)
-    kb = len(data) // 1024
-    total_kb += kb
-    print(f"  -> {var_name}: {len(data)} samples ({kb}KB, {len(data)/sr:.1f}s)")
-    out_parts.append(array_to_c(data, var_name, description, sr))
+for (filename, start_sec, max_sec, var_name, description, sr, bits) in CLIPS:
+    print(f"Converting {filename} [{start_sec}s..+{max_sec}s] @ {sr}Hz {bits}bit...")
+    samples = decode_float(filename, start_sec, max_sec, sr)
+    if bits == 8:
+        data = to_u8(samples)
+        kb = len(data) // 1024
+        total_kb += kb
+        print(f"  -> {var_name}: {len(data)} samples ({kb}KB, {len(data)/sr:.1f}s)")
+        out_parts.append(array_to_c_u8(data, var_name, description, sr))
+    else:
+        packed, sample_count = to_12bit_packed(samples)
+        kb = len(packed) // 1024
+        total_kb += kb
+        print(f"  -> {var_name}: {sample_count} samples ({kb}KB packed, {sample_count/sr:.1f}s)")
+        out_parts.append(array_to_c_12bit(packed, sample_count, var_name, description, sr))
 
-# Clip index arrays for per-band assignment
 out_parts += [
-    "// Per-band clip pairs: {clip_ptr, clip_len, clip_sr}",
+    "// 8-bit interference clip descriptor",
     "struct ClipDesc { const uint8_t* data; uint32_t len; uint32_t sr; };",
     "",
     "// AM band: POL + UM10",
@@ -118,17 +153,28 @@ out_parts += [
     "    { clip_mxl,  clip_mxl_len,  clip_mxl_sr  },",
     "};",
     "",
-    "// Altboot broadcast stations (higher quality, replace live audio inputs)",
-    "static const ClipDesc kBcastClips[2] = {",
+    "// All six interference clips flat (0=POL,1=UM10,2=F03,3=XT2,4=POLY,5=MXL)",
+    "static const ClipDesc kAllClips[6] = {",
+    "    { clip_pol,  clip_pol_len,  clip_pol_sr  },",
+    "    { clip_um10, clip_um10_len, clip_um10_sr },",
+    "    { clip_f03,  clip_f03_len,  clip_f03_sr  },",
+    "    { clip_xt2,  clip_xt2_len,  clip_xt2_sr  },",
+    "    { clip_poly, clip_poly_len, clip_poly_sr },",
+    "    { clip_mxl,  clip_mxl_len,  clip_mxl_sr  },",
+    "};",
+    "",
+    "// 12-bit packed broadcast clip descriptor (data is byte array, len is sample count)",
+    "struct BcastDesc { const uint8_t* data; uint32_t len; uint32_t sr; };",
+    "",
+    "static const BcastDesc kBcastClips[2] = {",
     "    { clip_demo1, clip_demo1_len, clip_demo1_sr },",
     "    { clip_demo2, clip_demo2_len, clip_demo2_sr },",
     "};",
     "",
 ]
 
-header = "\n".join(out_parts)
 out_path = os.path.join(os.path.dirname(__file__), "clips.h")
 with open(out_path, "w") as f:
-    f.write(header)
+    f.write("\n".join(out_parts))
 
 print(f"\nWrote clips.h ({total_kb}KB total audio)")
