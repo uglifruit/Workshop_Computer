@@ -98,3 +98,4 @@ pico_enable_stdio_usb(usb_serial 1)
 # add_example(chorgan)  # source deleted on this branch
 add_example(smear)
 add_example(chordseq)
+add_example(offair)
