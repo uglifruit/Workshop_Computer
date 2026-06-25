@@ -1,0 +1,6 @@
+Name: OffAir 2
+Description: "Shortwave radio simulator — tune across broadcast stations and interference with authentic heterodyne whistles, SSB pitch-shift detuning, AM envelope detection, swelling static, and a triggerable one-shot bank"
+Language: "C++ (Pico SDK / ComputerCard)"
+Creator: "Andy Jenkinson (uglifruit)"
+Version: "0.5.0"
+Status: "beta"
