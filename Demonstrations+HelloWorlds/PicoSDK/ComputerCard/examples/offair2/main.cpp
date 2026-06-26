@@ -66,7 +66,7 @@ static constexpr int32_t kNumClips    = 3;   // continuous interference streams
 // One-shot interference burst (Pulse In 2): random clip from kAllClips, ~1.5s,
 // ducked under the current audio, retrigger restarts.
 static constexpr int32_t kOsFadeSamples = 400;   // fade-out over last ~50ms (clip samples @8k)
-static constexpr int32_t kOsDuckShift   = 1;     // fairly present (>>1 ≈ −6dB)
+static constexpr int32_t kOsDuckShift   = 3;     // ducked under broadcast (>>3 ≈ −18dB)
 
 // Output gate threshold + new-lock trigger pulse width
 static constexpr int32_t kOnThresh   = 2000;     // station strength counts as "on"
@@ -89,10 +89,12 @@ static constexpr int32_t kToneMin     = 309;  // narrow IF → dull
 static constexpr int32_t kToneMax     = 1967; // wide IF → bright
 
 // Whistle amplitude (no longer ducked by audio strength — it has its own envelope).
-static constexpr int32_t kWhistleA    = 90;   // SW/LW heterodyne (quiet — tamed tuned note)
-static constexpr int32_t kWhistleA_AM = 240;  // AM whistle (no pitch-shift competing)
-static constexpr int32_t kWhistleFade = 70;   // whistle fades to 0 over the last N counts
-                                              // approaching tune (~560Hz); quieter sweet spot
+static constexpr int32_t kWhistleA    = 70;   // SW/LW heterodyne (quiet)
+static constexpr int32_t kWhistleA_AM = 200;  // AM whistle (no pitch-shift competing)
+// Whistle gate: silent within kWhistleLo counts of tune (no low rumble — clean tune-
+// through), ramps in to full by kWhistleFull once the beat is a high-pitched whistle.
+static constexpr int32_t kWhistleLo   = 50;   // ~400Hz beat: below this, no whistle
+static constexpr int32_t kWhistleFull = 110;  // ~880Hz beat: full whistle
 static constexpr int32_t kStDcShift   = 5;    // per-station HP ~239Hz (small-speaker roll-off:
                                               // thins the low pitch-slide on SW/LW tune-in)
 static constexpr int32_t kDetuneShift = 4;    // detune smoother (~16 samples, anti-zipper)
@@ -602,13 +604,16 @@ public:
             // audio strength). Full across the capture, fading only at zero-beat via the
             // low-pitch gate (real speakers can't reproduce the sub-200Hz beat).
             // ad in counts; whistle_hz = ad*8, so 25 counts ≈ 200Hz.
-            int32_t wlo   = ad < 25 ? (ad * 4096 / 25) : 4096;  // low-pitch (sub-200Hz) fade
-            int32_t wprox = ad >= kWhistleFade ? 4096            // far: full
-                          : (ad * 4096 / kWhistleFade);         // near tune: fade to 0
-            int32_t wgate = wlo < wprox ? wlo : wprox;          // whichever fades more
+            // Whistle gate: SILENT within kWhistleLo counts of tune (no low rumble —
+            // you can tune cleanly through the centre), then ramps in only once the
+            // beat is a proper high-pitched whistle, reaching full by kWhistleFull.
+            int32_t wgate;
+            if      (ad <= kWhistleLo)   wgate = 0;
+            else if (ad >= kWhistleFull) wgate = 4096;
+            else wgate = ((ad - kWhistleLo) * 4096) / (kWhistleFull - kWhistleLo);
             int32_t wAmp = pitchShift ? kWhistleA : kWhistleA_AM;
             int32_t whistle = (((wAmp * c) >> 7) * wgate) >> 12;
-            mix += (whistle * strength) >> 12;           // present mid-approach, gone on-tune
+            mix += (whistle * strength) >> 12;           // off near tune, whistle when hunting
 
             if (strength > maxStrength) maxStrength = strength;
         }
