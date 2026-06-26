@@ -23,7 +23,7 @@ import glob
 
 TARGET_SR_INTF  = 8000
 TARGET_SR_BCAST = 11025
-MAX_BCAST_SEC   = 25
+MAX_BCAST_SEC   = 35
 
 # One-shot bank: drop curated short event files (clicks, blips, dropouts, crashes,
 # single morse bursts...) into this folder. Any count, any length. Each is converted

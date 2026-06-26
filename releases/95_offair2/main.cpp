@@ -1,4 +1,4 @@
-// offair2 — shortwave radio simulator, v0.5.0 (behavioural tuning model)
+// offair2 — shortwave radio simulator, v0.6.0 (behavioural tuning model)
 //
 // Tune between two baked broadcast streams the way you tune a shortwave radio.
 // Instead of a literal AM encode/decode round-trip (which can't give clean
@@ -37,6 +37,7 @@
 //   Switch Down tap : Cycle band AM → SW → LW (re-randomises dial layout)
 //                     AM = correct-pitch audio (envelope detect); SW/LW = directional
 //                     pitch-shift (SSB). Both add a heterodyne whistle off-tune.
+//   Switch Up hold  : Dead-air — mutes the stations, leaves pure static
 //   LED 0/1         : Station 1/2 signal strength
 //   LED 2/3         : Band — both off = AM, LED2 = SW, LED3 = LW
 //   LED 5           : Tuning position
@@ -88,8 +89,10 @@ static constexpr int32_t kToneMin     = 309;  // narrow IF → dull
 static constexpr int32_t kToneMax     = 1967; // wide IF → bright
 
 // Whistle amplitude (no longer ducked by audio strength — it has its own envelope).
-static constexpr int32_t kWhistleA    = 150;  // SW/LW heterodyne (gentler — room for audio)
-static constexpr int32_t kWhistleA_AM = 360;  // AM whistle a touch louder
+static constexpr int32_t kWhistleA    = 90;   // SW/LW heterodyne (quiet — tamed tuned note)
+static constexpr int32_t kWhistleA_AM = 240;  // AM whistle (no pitch-shift competing)
+static constexpr int32_t kWhistleFade = 70;   // whistle fades to 0 over the last N counts
+                                              // approaching tune (~560Hz); quieter sweet spot
 static constexpr int32_t kStDcShift   = 5;    // per-station HP ~239Hz (small-speaker roll-off:
                                               // thins the low pitch-slide on SW/LW tune-in)
 static constexpr int32_t kDetuneShift = 4;    // detune smoother (~16 samples, anti-zipper)
@@ -121,8 +124,8 @@ static constexpr uint32_t kDriftProbMask = 0xFE000000u;
 // Noise swell/swish — slow random walks modulating noise level and filter cutoff.
 // Per band: {level-walk step, cutoff-walk range}. Probability mask sets walk speed.
 static constexpr uint32_t kNoiseWalkMask  = 0xFFE00000u;  // ~1/2048 chance/sample (slow)
-static constexpr int32_t  kSwellDepth[3]  = { 1200, 1800, 2600 }; // AM gentle, LW heavy fade
-static constexpr int32_t  kSwishRange[3]  = {  120,  400,   30 }; // cutoff wander (AM/SW/LW)
+static constexpr int32_t  kSwellDepth[3]  = { 1000, 1800, 3000 }; // AM steady, LW slow heavy fade
+static constexpr int32_t  kSwishRange[3]  = {  120,  700,   12 }; // SW swishes a lot, LW barely
 // Noise ducking when tuned to a station (Q12 = how much of full strength removes noise).
 // AM ducks fully; SW/LW now duck strongly too so the broadcast is clearly heard.
 static constexpr int32_t  kNoiseDuck[3]   = { 4096, 3600, 3400 }; // AM full / SW,LW strong
@@ -132,11 +135,11 @@ static constexpr int32_t  kNoiseDuck[3]   = { 4096, 3600, 3400 }; // AM full / S
 static constexpr int32_t kLpfAlpha[3] = { 1505, 1505, 860 };  // AM/SW bright, LW darker
 
 // Noise LPF character per band (AM mellow / SW bright crackle / LW deep rumble).
-static constexpr int32_t kNoiseLpf[3] = { 200, 564, 55 };
+static constexpr int32_t kNoiseLpf[3] = { 200, 900, 28 };  // AM mid / SW bright / LW deep
 // Gain compensation (Q8): low-pass filtering white noise loses energy, so heavily
 // filtered bands (low alpha) come out far quieter. These restore similar loudness
 // across bands. ~ 256 / lpf_gain(alpha): AM x6.3, SW x3.7, LW x12.2.
-static constexpr int32_t kNoiseGain[3] = { 1613, 947, 3123 };  // Q8 (x6.3 / x3.7 / x12.2)
+static constexpr int32_t kNoiseGain[3] = { 1613, 752, 4400 };  // Q8 — matches new kNoiseLpf
 
 // Clip playback sample-rate fractions
 static constexpr int32_t kClipNum  = 8000;
@@ -202,6 +205,7 @@ class OffAir : public ComputerCard
     // --- Switch tap ---
     int32_t switchTimer = 0;
     bool    downArmed   = true;
+    int32_t deadAir     = 0;   // Q12: 0 = normal, 4096 = dead-air (Switch held Up)
 
     // --- Knob smoothers ---
     int32_t smMain = 2048;
@@ -433,7 +437,7 @@ public:
         }
 
         // -------------------------------------------------------------------
-        // Switch tap: cycle band, re-randomise dial layout
+        // Switch: tap Down = cycle band (+ re-randomise); hold Up = dead-air.
         // -------------------------------------------------------------------
         Switch sw = SwitchVal();
         if (sw == Switch::Down) {
@@ -446,6 +450,9 @@ public:
             downArmed   = (switchTimer == 0);
             switchTimer = 0;
         }
+        // Dead-air: held Up smoothly mutes the stations, leaving pure static.
+        int32_t deadTarget = (sw == Switch::Up) ? 4096 : 0;
+        deadAir += (deadTarget - deadAir) >> 6;   // fast smooth ramp (~no click)
 
         // -------------------------------------------------------------------
         // Tuning position — Main knob + full-range CV In 1 (LFO/seq can scan the dial)
@@ -595,10 +602,13 @@ public:
             // audio strength). Full across the capture, fading only at zero-beat via the
             // low-pitch gate (real speakers can't reproduce the sub-200Hz beat).
             // ad in counts; whistle_hz = ad*8, so 25 counts ≈ 200Hz.
-            int32_t wlo  = ad < 25 ? (ad * 4096 / 25) : 4096;   // low-pitch fade
+            int32_t wlo   = ad < 25 ? (ad * 4096 / 25) : 4096;  // low-pitch (sub-200Hz) fade
+            int32_t wprox = ad >= kWhistleFade ? 4096            // far: full
+                          : (ad * 4096 / kWhistleFade);         // near tune: fade to 0
+            int32_t wgate = wlo < wprox ? wlo : wprox;          // whichever fades more
             int32_t wAmp = pitchShift ? kWhistleA : kWhistleA_AM;
-            int32_t whistle = (((wAmp * c) >> 7) * wlo) >> 12;  // ±wAmp tone
-            mix += (whistle * strength) >> 12;           // present across capture, gone on-tune
+            int32_t whistle = (((wAmp * c) >> 7) * wgate) >> 12;
+            mix += (whistle * strength) >> 12;           // present mid-approach, gone on-tune
 
             if (strength > maxStrength) maxStrength = strength;
         }
@@ -656,8 +666,10 @@ public:
         // -------------------------------------------------------------------
         mix = mix >> 1;                                  // headroom; softClip catches overlap
         mix = softClip(mix, 1800);                       // graceful crowded-band sat
-        mix += noiseOut;                                 // Knob Y / CV2 static (silent at CCW)
-        mix += osOut;                                    // one-shot burst, under the audio
+        // Dead-air (Switch Up): fade the stations + bursts to silence, keep static.
+        int32_t live = 4096 - deadAir;
+        mix = ((mix + osOut) * live) >> 12;              // stations + one-shot muted by dead-air
+        mix += noiseOut;                                 // static always passes (radio dead-air)
 
         // IF-bandwidth tone shaping (Knob X) — LAST in the chain, shapes everything:
         // narrow IF (CCW) = muffled, wide IF (CW) = bright/open.

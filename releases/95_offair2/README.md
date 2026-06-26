@@ -32,9 +32,9 @@ character and the demodulation behaviour:
 
 | Band | Demod near a station | Noise character |
 |------|----------------------|-----------------|
-| AM | Correct-pitch audio, distorts off-tune (envelope detection) | Mellow mid hiss, stable |
-| SW | Directional pitch-shift (SSB) | Bright crackly wash, fades |
-| LW | Directional pitch-shift (SSB) | Deep rumble, heavy fade |
+| AM | Correct-pitch audio, distorts off-tune (envelope detection) | Mellow mid hiss, steady |
+| SW | Directional pitch-shift (SSB) | Bright, busy, crackly wash that swishes |
+| LW | Directional pitch-shift (SSB) | Deep slow rumble, barely swishes, heavy fade |
 
 The dial layout (station and interference positions, and which clips play) is
 re-randomised each time you change band.
@@ -76,6 +76,9 @@ strongly on SW/LW. CV In 2 adds to this.
 
 **Switch Down tap — Cycle band.** AM → SW → LW, re-randomising the layout each time.
 
+**Switch Up hold — Dead-air.** While held up, the stations, whistles and bursts
+smoothly mute, leaving only static — the "between stations" kill. Release to return.
+
 ## One-shot bank
 
 Pulse In 2 triggers a short event from a curated one-shot bank — clicks, dropouts,
@@ -113,7 +116,7 @@ module into a self-contained radio. Everything else works identically.
 - Interference / one-shot clips: 8 kHz unsigned 8-bit mono.
 - Broadcast clips: 11025 Hz 12-bit packed signed (2 samples per 3 bytes).
 - Looping interference clips are trimmed to ≤12 s to leave flash headroom for the
-  one-shot bank; broadcast clips are 25 s.
+  one-shot bank; broadcast clips run ~32–34 s.
 - 200 ms startup holdoff before audio begins, with a short linear fade-in.
 
 ## Building
