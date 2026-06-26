@@ -1,14 +1,14 @@
-# OffAir 2
+# OffAir
 
 Shortwave radio simulator for the Workshop Computer.
 
-OffAir 2 lets you tune across a virtual band the way you tune a real shortwave
+OffAir lets you tune across a virtual band the way you tune a real shortwave
 receiver. As you approach a station you hear the signature heterodyne whistle slide
 in pitch, the audio pull into tune, and the background static duck away. Tune past it
 and the audio garbles, the whistle rises again, and it fades back into the noise.
 
 Rather than literally modulating and demodulating an RF carrier (which can't give
-clean selectivity in cheap integer DSP), OffAir 2 **synthesises the audible result**
+clean selectivity in cheap integer DSP), OffAir **synthesises the audible result**
 of detuning each station directly from how far off-tune you are:
 
 - a **heterodyne whistle** whose pitch slides with detune — the signature SW sound;
@@ -119,21 +119,51 @@ module into a self-contained radio. Everything else works identically.
   one-shot bank; broadcast clips run ~32–34 s.
 - 200 ms startup holdoff before audio begins, with a short linear fade-in.
 
-## Building
+## Using the prebuilt firmware
 
-Source: `main.cpp`, `clips.h` (baked audio), `convert_clips.py` (audio generator).
+Just flash **`offair2.uf2`** — hold BOOTSEL on the Computer, drag the file across.
+No build needed; the baked audio (`clips.h`) is already compiled in.
 
-To change the baked audio, edit `convert_clips.py` and re-run it to regenerate
-`clips.h`:
+## Making your own version with custom sounds
 
-- **Looping interference** and **broadcast** clips are listed explicitly in the
-  `CLIPS` table (filename, start, length, etc.). `LOOP_MAX_SEC` caps the loop length.
-- **One-shots** are auto-discovered: drop curated short files (WAV / MP3 / AIFF /
-  FLAC) into the `Oneshots/` folder; the script converts them all and builds the
-  one-shot bank automatically, warning if you exceed the flash budget.
+All the radio audio is baked into `clips.h`, generated from source audio files by
+`convert_clips.py`. The audio sources themselves are **not** included in this repo —
+supply your own. To build a version with your own broadcasts / interference / events:
 
-Then build the firmware with the Pico SDK (CMake / Ninja) and flash the resulting
-`offair2.uf2`.
+**1. Install the Python tools** (one-off):
+
+```
+pip install miniaudio numpy
+```
+
+**2. Prepare your audio.** Any format/sample rate works (WAV, MP3, AIFF, FLAC, mono
+or stereo, any rate — the script resamples and downmixes). There are three pools:
+
+- **Broadcast** — the two main stations you tune in (altboot mode plays these).
+- **Looping interference** — continuous beds (numbers, morse, data) that sit at
+  dial positions and loop forever.
+- **One-shots** — short isolated events (clicks, dropouts, crashes, single bursts)
+  triggered by Pulse In 2. Curate these to make sense heard alone.
+
+**3. Point the script at your files.** Edit the top of `convert_clips.py`:
+
+- `FOLDER` — the directory holding your broadcast and looping-interference files.
+- The `CLIPS` table — list each broadcast / interference file (filename, start
+  second, max length). `LOOP_MAX_SEC` caps interference loop length;
+  `MAX_BCAST_SEC` caps broadcast length. Keep 2 broadcast + 6 interference entries
+  unless you also change the counts in `main.cpp`.
+- `ONESHOT_FOLDER` — a folder of one-shot files; **all** files in it are
+  auto-discovered (any count). `ONESHOT_MAX_SEC` caps each one's length.
+
+**4. Generate and build:**
+
+```
+python convert_clips.py          # regenerates clips.h, prints sizes + flash budget
+```
+
+Then build with the Pico SDK (CMake / Ninja) from this folder and flash the new
+`offair2.uf2`. The script warns if your audio exceeds the ~2 MB flash budget — trim
+clip lengths or drop one-shots if so.
 
 ## Credits
 

@@ -1,19 +1,49 @@
 """
-Convert audio clips to C header arrays for OffAir.
+convert_clips.py — bake the OffAir radio audio into clips.h
 
-Interference clips:  8kHz,   uint8   (offset binary, 128=silence)
-Broadcast clips:    11025Hz, 12-bit packed signed (2 samples per 3 bytes)
+OffAir's audio (broadcast stations, looping interference, one-shot events) is
+compiled into clips.h as C arrays. This script generates that header from your own
+source audio files. The source audio is NOT shipped in the repo — supply your own.
+
+--------------------------------------------------------------------------------
+USAGE
+--------------------------------------------------------------------------------
+1. Install the tools (one-off):     pip install miniaudio numpy
+
+2. Pick your audio. Any format/rate works (WAV/MP3/AIFF/FLAC, mono or stereo, any
+   sample rate — it is resampled and downmixed automatically). Three pools:
+     - Broadcast       : the 2 main stations you tune in (altboot plays these)
+     - Interference    : continuous beds (numbers/morse/data) that loop at dial spots
+     - One-shots       : short isolated events (clicks/dropouts/bursts) on Pulse In 2
+
+3. Point the script at your files (see the settings just below):
+     - FOLDER          : directory with the broadcast + interference source files
+     - CLIPS table     : one row per broadcast/interference file
+                         (filename, start_sec, max_sec, var_name, description, sr, bits)
+                         Keep 2 broadcast + 6 interference rows unless you also change
+                         the stream counts in main.cpp.
+     - LOOP_MAX_SEC    : caps interference loop length (frees flash)
+     - MAX_BCAST_SEC   : caps broadcast length
+     - ONESHOT_FOLDER  : a folder of one-shot files — ALL files in it are
+                         auto-discovered (any count). ONESHOT_MAX_SEC caps each.
+
+4. Run from this directory:         python convert_clips.py
+   It rewrites clips.h and prints per-clip sizes plus the total flash budget
+   (warns if you exceed ~2 MB — trim lengths or drop one-shots if so).
+
+Then rebuild the firmware (Pico SDK / CMake / Ninja) and flash the new .uf2.
+
+--------------------------------------------------------------------------------
+AUDIO FORMATS (what gets baked)
+--------------------------------------------------------------------------------
+Interference / one-shots : 8 kHz,    uint8   (offset binary, 128 = silence)
+Broadcast clips          : 11025 Hz, 12-bit packed signed (2 samples per 3 bytes)
 
 12-bit packing layout (A=sample[i], B=sample[i+1]):
-  byte0 = A[11:4]
-  byte1 = (A[3:0]<<4) | B[11:8]
-  byte2 = B[7:0]
-
+  byte0 = A[11:4];  byte1 = (A[3:0]<<4) | B[11:8];  byte2 = B[7:0]
 Unpack in C:
   int32_t a = (int32_t)((byte0<<4)|(byte1>>4));  if(a>=2048)a-=4096;
   int32_t b = (int32_t)(((byte1&0xF)<<8)|byte2); if(b>=2048)b-=4096;
-
-Run from this directory to regenerate clips.h.
 """
 
 import miniaudio
