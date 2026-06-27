@@ -45,7 +45,7 @@ re-randomised each time you change band.
 |------|----------|
 | Audio In 1 | Station 1 source (live audio, normal boot) |
 | Audio In 2 | Station 2 source (live audio, normal boot) |
-| CV In 1 | Tuning — full range, bipolar. Patch an LFO or sequencer to scan the dial hands-free |
+| CV In 1 | Tuning offset (1:1, added to the Main knob; ±5V ≈ ±half the dial). Patch an LFO/sequencer to scan, or CV Out 2 to home on Broadcast 1 |
 | CV In 2 | Noise level — adds to Knob Y (voltage-controlled static) |
 | Pulse In 1 | Rising edge — re-randomise the station / interference layout. (In normal boot with Switch Up, this becomes the morse key instead — see Controls) |
 | Pulse In 2 | Rising edge — trigger a one-shot from the curated one-shot bank |
@@ -57,7 +57,7 @@ re-randomised each time you change band.
 | Audio Out 1 | Full mix — tuned audio, whistles, static, one-shot bursts |
 | Audio Out 2 | Noise / static only |
 | CV Out 1 | Signal strength — an envelope that rises as you tune onto a station |
-| CV Out 2 | Broadcast 1's tuning position — patch through a slew into CV In 1 to slowly tune toward Broadcast 1 (re-hunts when Pulse In 1 re-randomises) |
+| CV Out 2 | Broadcast 1's offset from the knob — patch through a slew into CV In 1 and the dial tunes exactly onto Broadcast 1, whatever the knob is set to (re-hunts when Pulse In 1 re-randomises) |
 | Pulse Out 1 | Gate HIGH while tuned to Broadcast 1 |
 | Pulse Out 2 | Gate HIGH while tuned to Broadcast 2 |
 

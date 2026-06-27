@@ -23,7 +23,7 @@
 //   Knob X          : IF bandwidth — capture width + audio brightness
 //                     (CCW narrow/muffled/selective, CW wide/bright/easy)
 //   Knob Y          : Noise / static level (slow random swell + swish)
-//   CV In 1         : Tuning (full range — LFO/sequencer scans the whole dial)
+//   CV In 1         : Tuning offset (1:1, added to Main knob — ±5V = ±half dial)
 //   CV In 2         : Noise level (adds to Knob Y — voltage-controlled static)
 //   Pulse In 1      : Rising edge = re-randomise station / interference layout.
 //                     In NORMAL boot + Switch Up it is the morse key instead (see below)
@@ -32,7 +32,7 @@
 //   Audio Out 1     : Full mix — tuned audio + whistles + noise + bursts
 //   Audio Out 2     : Noise only
 //   CV Out 1        : Signal strength (envelope — rises as you tune in)
-//   CV Out 2        : Broadcast 1 tuning position (slew → CV In 1 to hunt to it)
+//   CV Out 2        : Broadcast 1 offset from knob (slew → CV In 1 tunes onto B1)
 //   Pulse Out 1     : Gate HIGH while tuned to Broadcast 1
 //   Pulse Out 2     : Gate HIGH while tuned to Broadcast 2
 //   Switch Down tap : Cycle band AM → SW → LW (re-randomises dial layout)
@@ -465,10 +465,12 @@ public:
         bool morseMode = switchUp && !altbootMode;   // normal boot + Up = morse on B2
 
         // -------------------------------------------------------------------
-        // Tuning position — Main knob + full-range CV In 1 (LFO/seq can scan the dial)
+        // Tuning position — Main knob (coarse) + CV In 1 as a 1:1 offset.
+        // 1:1 scaling means CV Out 2 (= Broadcast 1's offset from the knob) fed back
+        // into CV In 1 lands exactly on Broadcast 1, regardless of knob position.
         // -------------------------------------------------------------------
-        int32_t cv1 = CVIn1();                       // ±2048
-        int32_t tunePos = smMain + (cv1 * 4095) / 2048;  // CV ±5V sweeps the whole dial
+        int32_t cv1 = CVIn1();                       // ±2048 (≈ ±5V)
+        int32_t tunePos = smMain + cv1;              // 1:1 offset, no gain
         if (tunePos < 0)    tunePos = 0;
         if (tunePos > 4095) tunePos = 4095;
 
@@ -724,10 +726,15 @@ public:
         int32_t sigStr = env1 + env2;
         if (sigStr > 4095) sigStr = 4095;
         CVOut1((int16_t)(sigStr - 2048));
-        // CV Out 2: tuning position of Broadcast 1 (bipolar). Patch via an external
-        // slew into CV In 1 to slowly tune toward Broadcast 1; tap Pulse In 1 to
-        // re-randomise and it hunts to the new position.
-        CVOut2((int16_t)(dialPos[0] - 2048));
+        // CV Out 2: Broadcast 1's offset from the current knob position. Patch via an
+        // external slew into CV In 1 (a 1:1 offset) and the dial tunes exactly onto
+        // Broadcast 1, whatever the knob is set to; tap Pulse In 1 to re-randomise and
+        // it hunts to the new position. (Clamps at ±5V if B1 is >½ dial from the knob —
+        // nudge the Main knob nearer if so.)
+        int32_t b1off = dialPos[0] - smMain;
+        if (b1off >  2047) b1off =  2047;
+        if (b1off < -2048) b1off = -2048;
+        CVOut2((int16_t)b1off);
 
         // Pulse Out 1 / 2: HIGH while tuned to Broadcast 1 / Broadcast 2 respectively.
         PulseOut1(env1 > kOnThresh);
