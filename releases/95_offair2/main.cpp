@@ -1,46 +1,48 @@
-// offair2 — shortwave radio simulator, v0.6.0 (behavioural tuning model)
+// offair — shortwave radio simulator, v0.6.0 (behavioural tuning model)
 //
-// Tune between two baked broadcast streams the way you tune a shortwave radio.
-// Instead of a literal AM encode/decode round-trip (which can't give clean
-// selectivity in cheap integer DSP), we synthesise the audible RESULT of detuning
-// each station directly from detune = (tunePos - stationPos):
+// Tune between two Stations the way you tune a shortwave radio. Instead of a literal
+// AM encode/decode round-trip (which can't give clean selectivity in cheap integer
+// DSP), we synthesise the audible RESULT of detuning each Station directly from
+// detune = (tunePos - stationPos):
 //   - a heterodyne whistle whose pitch slides with |detune| (the signature SW sound)
 //   - the audio single-sideband FREQUENCY-SHIFTED by detune (harmonics break →
 //     the "wrong pitch"/metallic sound of a near-tuned SW station). This is the
 //     genuine product-detector behaviour: a detuned LO shifts the recovered audio.
-//   - the whole station attenuated as |detune| grows, fading at the band edge.
+//   - the whole Station attenuated as |detune| grows, fading at the band edge.
 //   - at detune = 0: clean, correctly-pitched audio; whistle vanishes (it's at DC).
 // All frequencies stay in the audio band → no aliasing, no instability.
 //
-// Two broadcast stations + three interference clips (morse/data) are scattered
-// across the dial, re-randomised on each band tap. Sometimes a station and an
-// interferer overlap — like a crowded SW band.
+// Two Stations + three interference clips (morse/data) are scattered across the dial,
+// re-randomised on each band tap. Sometimes a Station and an interferer overlap —
+// like a crowded SW band. A separate "Insta-ference" bank of short one-shot events
+// can be fired in via Pulse In 2.
 //
-// ALTBOOT (hold Switch Down at power-on until all LEDs flash):
-//   Live Audio In 1/2 replaced by baked broadcast recordings.
+// BAKED-IN AUDIO MODE (hold Switch Down at power-on until all LEDs flash):
+//   Live Audio In 1/2 (Station 1/2) replaced by baked recordings.
 //
-//   Main Knob       : Tuning position
-//   Knob X          : IF bandwidth — capture width + audio brightness
+//   Main Knob       : Tuning
+//   Knob X (Bright) : IF bandwidth — capture width + audio brightness
 //                     (CCW narrow/muffled/selective, CW wide/bright/easy)
-//   Knob Y          : Noise / static level (slow random swell + swish)
-//   CV In 1         : Tuning offset (1:1, added to Main knob — ±5V = ±half dial)
-//   CV In 2         : Noise level (adds to Knob Y — voltage-controlled static)
-//   Pulse In 1      : Rising edge = re-randomise station / interference layout.
-//                     In NORMAL boot + Switch Up it is the morse key instead (see below)
-//   Pulse In 2      : Rising edge = trigger a one-shot from the curated one-shot bank
-//                     (short event played once-through; falls back to loop bank if empty)
-//   Audio Out 1     : Full mix — tuned audio + whistles + noise + bursts
-//   Audio Out 2     : Noise only
-//   CV Out 1        : Signal strength (envelope — rises as you tune in)
-//   CV Out 2        : Broadcast 1 offset from knob (slew → CV In 1 tunes onto B1)
-//   Pulse Out 1     : Gate HIGH while tuned to Broadcast 1
-//   Pulse Out 2     : Gate HIGH while tuned to Broadcast 2
+//   Knob Y (Noise)  : Noise / static level (slow random swell + swish)
+//   CV In 1 (Tuner) : Tuning offset (1:1, added to Main knob — ±5V = ±half dial)
+//   CV In 2 (Noise) : Noise level (adds to Knob Y — voltage-controlled static)
+//   Pulse In 1      : Shuffle Signals — rising edge re-randomises the Station /
+//                     interference layout. In audio-input mode + Switch Up it is the
+//                     Morse In key instead (see below).
+//   Pulse In 2      : Insta-ference — rising edge fires a one-shot from the curated
+//                     bank (played once-through; falls back to loop bank if empty)
+//   Audio Out 1     : Output — full mix (tuned audio + whistles + noise + Insta-ference)
+//   Audio Out 2     : Just Noise — static only
+//   CV Out 1        : Signal Strength (envelope — rises as you tune in)
+//   CV Out 2        : Station 1 CV Offset (slew → CV In 1 tunes onto Station 1)
+//   Pulse Out 1     : Station 1 Tuned Gate — HIGH while tuned to Station 1
+//   Pulse Out 2     : Station 2 Tuned Gate — HIGH while tuned to Station 2
 //   Switch Down tap : Cycle band AM → SW → LW (re-randomises dial layout)
 //                     AM = correct-pitch audio (envelope detect); SW/LW = directional
 //                     pitch-shift (SSB). Both add a heterodyne whistle off-tune.
-//   Switch Up hold  : ALTBOOT  → mute broadcasts 1 & 2 (interference + CV/pulse stay)
-//                     NORMAL   → Broadcast 2 becomes a ~600Hz morse tone keyed by
-//                                Pulse In 1 (PU1 stops shuffling while held)
+//   Switch Up hold  : BAKED-IN  → mute Station 1 & 2 (interference + CV/pulse stay)
+//                     AUDIO-IN   → Station 2 becomes a ~600Hz morse tone keyed by
+//                                  Pulse In 1 (PU1 stops shuffling while held)
 //   LED 0/1         : Station 1/2 signal strength
 //   LED 2/3         : Band — both off = AM, LED2 = SW, LED3 = LW
 //   LED 5           : Tuning position
