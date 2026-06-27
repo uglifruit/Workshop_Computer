@@ -1,9 +1,9 @@
 Name: Chorgan
-Description: Chorgan — 6-voice chord synthesizer with morphing timbre, chord extension presets, and built-in chord sequencer. Two modes: normal (detune/chorus) and slew (portamento chord changes). Inspired by the Music Thing Modular Chord Organ.
+Description: "Chorgan — 6-voice chord synthesizer with morphing timbre, chord extension presets, and built-in chord sequencer. Two modes: normal (detune/chorus) and slew (portamento chord changes). Inspired by the Music Thing Modular Chord Organ."
 Language: C++ (Pico SDK / ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
 Version: 1.1.0
-Status: Released
+Status: released
 
 tags:
   - synthesizer
@@ -66,13 +66,13 @@ controls:
     - when: { z: middle }
       main:
         name: Timbre
-        description: Morphs waveform of all six voices (pulse to sine to saw to sine to pulse)
+        description: Morphs waveform of all six voices (pulse → sine → saw → sine → pulse)
       x:
         name: Root Pitch
         description: Root pitch from C3 to C6, summed with CV In 1
       y:
         name: Interval
-        description: Semitone interval between root and voice 2 (0-12)
+        description: Semitone interval between root and voice 2 (0–12)
     - when: { z: up }
       main:
         name: Timbre
@@ -101,7 +101,7 @@ controls:
       items:
         - id: LED0
           name: Interval Position A
-          description: Part of interval position display across LEDs 0-4
+          description: Part of interval position display across LEDs 0–4
         - id: LED1
           name: Store/Recall Bit A
           description: Binary slot indicator during store/recall gestures
@@ -113,7 +113,7 @@ controls:
           name: Interval Position C
         - id: LED5
           name: Preset Brightness
-          description: Brightness indicates current extension preset (0-5)
+          description: Brightness indicates current extension preset (0–5)
 
 host:
   notes: |
