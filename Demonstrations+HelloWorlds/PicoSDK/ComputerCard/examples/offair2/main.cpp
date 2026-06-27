@@ -1,4 +1,4 @@
-// offair — shortwave radio simulator, v0.6.0 (behavioural tuning model)
+// offair — shortwave radio simulator, v1.0.0 (behavioural tuning model)
 //
 // Tune between two Stations the way you tune a shortwave radio. Instead of a literal
 // AM encode/decode round-trip (which can't give clean selectivity in cheap integer

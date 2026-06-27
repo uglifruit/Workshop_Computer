@@ -1,15 +1,13 @@
 # OffAir
 
-Shortwave radio simulator for the Workshop Computer.
+AM/Shortwave/Longwave radio simulator for the Workshop Computer.
 
 OffAir lets you tune across a virtual band the way you tune a real shortwave
 receiver. As you approach a station you hear the signature heterodyne whistle slide
 in pitch, the audio pull into tune, and the background static duck away. Tune past it
 and the audio garbles, the whistle rises again, and it fades back into the noise.
 
-Rather than literally modulating and demodulating an RF carrier (which can't give
-clean selectivity in cheap integer DSP), OffAir **synthesises the audible result**
-of detuning each station directly from how far off-tune you are:
+Simulating the modulating and demodulating an RF carrier, OffAir gives the sound of detuning each station directly from how far off-tune you are:
 
 - a **heterodyne whistle** whose pitch slides with detune — the signature SW sound;
 - on **SW/LW**, the audio is **single-sideband frequency-shifted** by the detune
@@ -62,7 +60,7 @@ re-randomised each time you change band.
 | Audio Out 1 | Output | Full mix — tuned audio, whistles, static, Insta-ference |
 | Audio Out 2 | Just Noise | Noise / static only |
 | CV Out 1 | Signal Strength | An envelope that rises as you tune onto a Station |
-| CV Out 2 | Station 1 CV Offset | Station 1's offset from the knob — patch through a slew into CV In 1 and the dial tunes exactly onto Station 1, whatever the knob is set to (re-hunts when Pulse In 1 re-randomises) |
+| CV Out 2 | Station 1 CV Offset | Station 1's offset from the main knob |
 | Pulse Out 1 | Station 1 Tuned Gate | Gate HIGH while tuned to Station 1 |
 | Pulse Out 2 | Station 2 Tuned Gate | Gate HIGH while tuned to Station 2 |
 
@@ -119,6 +117,45 @@ self-contained radio. Everything else works identically.
 | 1 | Station 2 signal strength |
 | 2 / 3 | Band — both off = AM, LED 2 = SW, LED 3 = LW |
 | 5 | Tuning position |
+
+
+## Patch ideas
+
+- **Auto-tune to a Station.** Patch CV Out 2 (Station 1 CV Offset) through a slew into
+  CV In 1 and the dial tunes onto Station 1, whatever the knob is set to. Trigger
+  Pulse In 1 to re-randomise and it slowly hunts to the new position — a self-playing
+  radio that keeps finding the station.
+
+- **Rhythmic morse instrument.** Boot in audio-input mode, hold Switch Up, and clock
+  Pulse In 1 (Morse In) from a sequencer or trigger pattern. Station 2 becomes a keyed
+  ~600 Hz tone in time with your rhythm — tune onto it for a clean beep, or off it for
+  pitch-shifted, whistling morse. A signal that's also a musical part.
+
+- **Radio as an envelope/gate source.** CV Out 1 (Signal Strength) rises as you tune
+  in — patch it to a VCA or filter so other voices swell as you find a station. Use
+  Pulse Out 1 / 2 (Station 1 / 2 Tuned Gate) to clock or gate envelopes only while a
+  Station is locked.
+
+- **Hands-free band scanning.** Patch a slow LFO to CV In 1 (Tuner) to drift across
+  the dial on its own — stations and interference drift past, whistling in and out.
+  Add Pulse Out triggers to fire events each time a Station passes.
+
+- **Tuned drum trigger.** Sweep slowly and take Pulse Out 1/2 as triggers: each pass
+  through a Station fires a hit — the dial layout (re-randomised by Pulse In 1) sets
+  the rhythm.
+
+- **Stab punctuation.** Clock Pulse In 2 (Insta-ference) from an off-beat to drop in
+  short clicks/dropouts/morse bursts as percussion under the tuned audio.
+
+- **Process external audio.** In audio-input mode, feed your own sources into Audio In
+  1 / 2 (Station 1 / 2) and use the radio as a tuning-based degrade/pitch-shift/gate
+  effect — tune in for clean, off for the SSB-mangled version.
+
+- **Dual-output split.** Take the full mix from Audio Out 1 and pure static from Audio
+  Out 2 (Just Noise) into separate channels — process the static independently
+  (reverb, gate) for an atmospheric bed under the stations.
+
+
 
 ## Technical notes
 
