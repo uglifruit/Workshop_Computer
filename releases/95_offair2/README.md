@@ -124,7 +124,12 @@ self-contained radio. Everything else works identically.
 - **Auto-tune to a Station.** Patch CV Out 2 (Station 1 CV Offset) through a slew into
   CV In 1 and the dial tunes onto Station 1, whatever the knob is set to. Trigger
   Pulse In 1 to re-randomise and it slowly hunts to the new position — a self-playing
-  radio that keeps finding the station.
+  radio that keeps finding the station (cleaner on AM band, LW and SW get 'near').
+
+- **Fine-tune to a Station.** Self-patch CV Out 2 (Station 1 CV Offset) straight into
+  CV In 1 with no slew. The dial snaps to Station 1, and shuffling the layout (Pulse In
+  1) or changing band keeps tuning locked near Station 1 — so the Main knob becomes a
+  fine-tune around it.
 
 - **Rhythmic morse instrument.** Boot in audio-input mode, hold Switch Up, and clock
   Pulse In 1 (Morse In) from a sequencer or trigger pattern. Station 2 becomes a keyed
@@ -172,8 +177,10 @@ self-contained radio. Everything else works identically.
 
 ## Using the prebuilt firmware
 
-Just flash **`offair.uf2`** — hold BOOTSEL on the Computer, drag the file across.
-No build needed; the baked audio (`clips.h`) is already compiled in.
+Download **`offair.uf2`** from the
+[releases page](https://github.com/uglifruit/Workshop_Computer/releases) (or grab it
+from this folder), hold BOOTSEL on the Computer, and drag the file across. No build
+needed; the baked-in audio (`clips.h`) is already compiled in the firmware.
 
 ## Making your own version with custom sounds
 
@@ -181,11 +188,7 @@ All the radio audio is baked into `clips.h`, generated from source audio files b
 `convert_clips.py`. The audio sources themselves are **not** included in this repo —
 supply your own. To build a version with your own Stations / interference / events:
 
-**1. Install the Python tools** (one-off):
-
-```
-pip install miniaudio numpy
-```
+**1. Install the Python tools** (one-off): `pip install miniaudio numpy`
 
 **2. Prepare your audio.** Any format/sample rate works (WAV, MP3, AIFF, FLAC, mono
 or stereo, any rate — the script resamples and downmixes). There are three pools:
@@ -211,7 +214,6 @@ or stereo, any rate — the script resamples and downmixes). There are three poo
 ```
 python convert_clips.py          # regenerates clips.h, prints sizes + flash budget
 ```
-
 Then build with the Pico SDK (CMake / Ninja) from this folder and flash the new
 `offair.uf2`. The script warns if your audio exceeds the ~2 MB flash budget — trim
 clip lengths or drop Insta-ference if so.
