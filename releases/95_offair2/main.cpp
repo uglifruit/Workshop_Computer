@@ -25,19 +25,22 @@
 //   Knob Y          : Noise / static level (slow random swell + swish)
 //   CV In 1         : Tuning (full range — LFO/sequencer scans the whole dial)
 //   CV In 2         : Noise level (adds to Knob Y — voltage-controlled static)
-//   Pulse In 1      : Rising edge = re-randomise station / interference layout
+//   Pulse In 1      : Rising edge = re-randomise station / interference layout.
+//                     In NORMAL boot + Switch Up it is the morse key instead (see below)
 //   Pulse In 2      : Rising edge = trigger a one-shot from the curated one-shot bank
 //                     (short event played once-through; falls back to loop bank if empty)
 //   Audio Out 1     : Full mix — tuned audio + whistles + noise + bursts
 //   Audio Out 2     : Noise only
 //   CV Out 1        : Signal strength (envelope — rises as you tune in)
 //   CV Out 2        : Broadcast 1 tuning position (slew → CV In 1 to hunt to it)
-//   Pulse Out 1     : Gate HIGH while on any station
-//   Pulse Out 2     : Short trigger each time you newly lock onto a station
+//   Pulse Out 1     : Gate HIGH while tuned to Broadcast 1
+//   Pulse Out 2     : Gate HIGH while tuned to Broadcast 2
 //   Switch Down tap : Cycle band AM → SW → LW (re-randomises dial layout)
 //                     AM = correct-pitch audio (envelope detect); SW/LW = directional
 //                     pitch-shift (SSB). Both add a heterodyne whistle off-tune.
-//   Switch Up hold  : Dead-air — mutes the stations, leaves pure static
+//   Switch Up hold  : ALTBOOT  → mute broadcasts 1 & 2 (interference + CV/pulse stay)
+//                     NORMAL   → Broadcast 2 becomes a ~600Hz morse tone keyed by
+//                                Pulse In 1 (PU1 stops shuffling while held)
 //   LED 0/1         : Station 1/2 signal strength
 //   LED 2/3         : Band — both off = AM, LED2 = SW, LED3 = LW
 //   LED 5           : Tuning position
@@ -68,9 +71,14 @@ static constexpr int32_t kNumClips    = 3;   // continuous interference streams
 static constexpr int32_t kOsFadeSamples = 400;   // fade-out over last ~50ms (clip samples @8k)
 static constexpr int32_t kOsDuckShift   = 3;     // ducked under broadcast (>>3 ≈ −18dB)
 
-// Output gate threshold + new-lock trigger pulse width
-static constexpr int32_t kOnThresh   = 2000;     // station strength counts as "on"
-static constexpr int32_t kLockPulse  = 240;      // ~5ms trigger on new station lock
+// Pulse-out gate threshold: tuned-to-station when strength exceeds this.
+static constexpr int32_t kOnThresh   = 2000;
+
+// Morse tone (Normal boot + Switch Up): Broadcast 2's audio becomes a ~600Hz CW
+// sidetone keyed by the Pulse In 1 input — a rhythmic signal that's also musical.
+static constexpr int32_t kMorseInc   = 53687091; // 600Hz: 600 * 2^32 / 48000
+static constexpr int32_t kMorseLevel = 1200;     // tone peak (≈ broadcast audio level)
+static constexpr int32_t kMorseRamp  = 6;        // key attack/release smoothing (no click)
 
 // detune → pitch: whistle/shift = |detune| * kWhistleK Hz.
 // kWhistleK=8 gives a gentle slide: you can detune further before the pitch sounds
@@ -207,7 +215,10 @@ class OffAir : public ComputerCard
     // --- Switch tap ---
     int32_t switchTimer = 0;
     bool    downArmed   = true;
-    int32_t deadAir     = 0;   // Q12: 0 = normal, 4096 = dead-air (Switch held Up)
+
+    // --- Morse tone (Normal boot + Switch Up): B2 = PU1-keyed CW tone ---
+    uint32_t morsePhase = 0;
+    int32_t  morseKey   = 0;   // Q12 key envelope, smoothed from PU1
 
     // --- Knob smoothers ---
     int32_t smMain = 2048;
@@ -245,10 +256,6 @@ class OffAir : public ComputerCard
     uint32_t osPos     = 0;
     int32_t  osFrac    = 0;
     int32_t  osSample  = 0;
-
-    // --- New-station-lock trigger (Pulse Out 2) ---
-    bool     onStationPrev = false;
-    int32_t  lockPulse     = 0;
 
     // --- Altboot flash ---
     int32_t altbootFlash = 24000;
@@ -439,7 +446,9 @@ public:
         }
 
         // -------------------------------------------------------------------
-        // Switch: tap Down = cycle band (+ re-randomise); hold Up = dead-air.
+        // Switch: tap Down = cycle band (+ re-randomise). Hold Up is mode-dependent:
+        //   ALTBOOT  → mute broadcasts 1 & 2 (stations still exist for CV/pulse)
+        //   NORMAL   → Broadcast 2 becomes a PU1-keyed morse tone (PU1 stops shuffling)
         // -------------------------------------------------------------------
         Switch sw = SwitchVal();
         if (sw == Switch::Down) {
@@ -452,9 +461,8 @@ public:
             downArmed   = (switchTimer == 0);
             switchTimer = 0;
         }
-        // Dead-air: held Up smoothly mutes the stations, leaving pure static.
-        int32_t deadTarget = (sw == Switch::Up) ? 4096 : 0;
-        deadAir += (deadTarget - deadAir) >> 6;   // fast smooth ramp (~no click)
+        bool switchUp  = (sw == Switch::Up);
+        bool morseMode = switchUp && !altbootMode;   // normal boot + Up = morse on B2
 
         // -------------------------------------------------------------------
         // Tuning position — Main knob + full-range CV In 1 (LFO/seq can scan the dial)
@@ -475,11 +483,18 @@ public:
         int32_t toneAlpha = kToneMin + (smX * (kToneMax - kToneMin)) / 4095;
 
         // -------------------------------------------------------------------
-        // Pulse In 1 rising edge → re-randomise station / interference layout.
+        // Pulse In 1: normally re-randomises the layout on a rising edge. In morse
+        // mode (Normal boot + Switch Up) it is instead the morse key (see below).
         // -------------------------------------------------------------------
         bool pu1Now = PulseIn1();
-        if (pu1Now && !pu1Prev) randomiseDial();
+        if (!morseMode && pu1Now && !pu1Prev) randomiseDial();
         pu1Prev = pu1Now;
+
+        // Morse oscillator + key envelope (used only in morse mode).
+        morsePhase += (uint32_t)kMorseInc;
+        int32_t keyTarget = (morseMode && pu1Now) ? 4096 : 0;
+        morseKey += (keyTarget - morseKey) >> kMorseRamp;     // smooth attack/release
+        int32_t morseTone = (((isin(morsePhase) * kMorseLevel) >> 7) * morseKey) >> 12;
 
         // -------------------------------------------------------------------
         // Pulse In 2 rising edge → trigger a one-shot from the curated bank.
@@ -523,6 +538,14 @@ public:
         aud[2] = (stepIntf(0) * kIntfScale) >> 11;
         aud[3] = (stepIntf(1) * kIntfScale) >> 11;
         aud[4] = (stepIntf(2) * kIntfScale) >> 11;
+
+        // Switch Up overrides (broadcast audio only — strengths/CV/pulse unaffected):
+        if (morseMode) {
+            aud[1] = morseTone;              // Normal boot: B2 = PU1-keyed morse tone
+        } else if (switchUp) {               // Altboot: mute both broadcasts
+            aud[0] = 0;
+            aud[1] = 0;
+        }
 
         // -------------------------------------------------------------------
         // Per-station behavioural demod:
@@ -671,10 +694,8 @@ public:
         // -------------------------------------------------------------------
         mix = mix >> 1;                                  // headroom; softClip catches overlap
         mix = softClip(mix, 1800);                       // graceful crowded-band sat
-        // Dead-air (Switch Up): fade the stations + bursts to silence, keep static.
-        int32_t live = 4096 - deadAir;
-        mix = ((mix + osOut) * live) >> 12;              // stations + one-shot muted by dead-air
-        mix += noiseOut;                                 // static always passes (radio dead-air)
+        mix += noiseOut;                                 // Knob Y / CV2 static
+        mix += osOut;                                    // one-shot burst, under the audio
 
         // IF-bandwidth tone shaping (Knob X) — LAST in the chain, shapes everything:
         // narrow IF (CCW) = muffled, wide IF (CW) = bright/open.
@@ -698,9 +719,6 @@ public:
         // -------------------------------------------------------------------
         int32_t env1 = stStrength[0]; if (env1 > 4095) env1 = 4095;
         int32_t env2 = stStrength[1]; if (env2 > 4095) env2 = 4095;
-        int32_t maxIntfEnv = stStrength[2];
-        if (stStrength[3] > maxIntfEnv) maxIntfEnv = stStrength[3];
-        if (stStrength[4] > maxIntfEnv) maxIntfEnv = stStrength[4];
 
         // CV Out 1: overall signal strength (envelope — rises as you tune in).
         int32_t sigStr = env1 + env2;
@@ -711,15 +729,9 @@ public:
         // re-randomise and it hunts to the new position.
         CVOut2((int16_t)(dialPos[0] - 2048));
 
-        // Pulse Out 1: gate HIGH while on ANY station (broadcast or interference).
-        bool onStation = (env1 > kOnThresh) || (env2 > kOnThresh) || (maxIntfEnv > kOnThresh);
-        PulseOut1(onStation);
-
-        // Pulse Out 2: short trigger each time you newly LOCK onto a station.
-        if (onStation && !onStationPrev) lockPulse = kLockPulse;
-        onStationPrev = onStation;
-        if (lockPulse > 0) lockPulse--;
-        PulseOut2(lockPulse > 0);
+        // Pulse Out 1 / 2: HIGH while tuned to Broadcast 1 / Broadcast 2 respectively.
+        PulseOut1(env1 > kOnThresh);
+        PulseOut2(env2 > kOnThresh);
 
         if (altbootMode && altbootFlash > 0) {
             altbootFlash--;

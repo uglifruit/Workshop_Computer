@@ -47,7 +47,7 @@ re-randomised each time you change band.
 | Audio In 2 | Station 2 source (live audio, normal boot) |
 | CV In 1 | Tuning — full range, bipolar. Patch an LFO or sequencer to scan the dial hands-free |
 | CV In 2 | Noise level — adds to Knob Y (voltage-controlled static) |
-| Pulse In 1 | Rising edge — re-randomise the station / interference layout |
+| Pulse In 1 | Rising edge — re-randomise the station / interference layout. (In normal boot with Switch Up, this becomes the morse key instead — see Controls) |
 | Pulse In 2 | Rising edge — trigger a one-shot from the curated one-shot bank |
 
 ## Outputs
@@ -58,8 +58,8 @@ re-randomised each time you change band.
 | Audio Out 2 | Noise / static only |
 | CV Out 1 | Signal strength — an envelope that rises as you tune onto a station |
 | CV Out 2 | Broadcast 1's tuning position — patch through a slew into CV In 1 to slowly tune toward Broadcast 1 (re-hunts when Pulse In 1 re-randomises) |
-| Pulse Out 1 | Gate HIGH while on any station |
-| Pulse Out 2 | Short trigger each time you newly lock onto a station |
+| Pulse Out 1 | Gate HIGH while tuned to Broadcast 1 |
+| Pulse Out 2 | Gate HIGH while tuned to Broadcast 2 |
 
 ## Controls
 
@@ -76,8 +76,15 @@ strongly on SW/LW. CV In 2 adds to this.
 
 **Switch Down tap — Cycle band.** AM → SW → LW, re-randomising the layout each time.
 
-**Switch Up hold — Dead-air.** While held up, the stations, whistles and bursts
-smoothly mute, leaving only static — the "between stations" kill. Release to return.
+**Switch Up hold — mode-dependent.** What it does depends on how you booted:
+
+- **Broadcast mode (altboot):** mutes broadcasts 1 & 2. The interference signals carry
+  on, and the broadcasts still "exist" — they keep driving CV Out 1/2 and Pulse Out
+  1/2 at their dial positions — they just make no sound. Release to bring them back.
+- **Normal mode:** Broadcast 2's audio is replaced by a ~600 Hz morse tone keyed by
+  **Pulse In 1** — feed a rhythm or gate pattern into PU1 and it becomes an audible
+  keyed signal at Broadcast 2's position (heard when tuned to it, pitch-shifting
+  off-tune like any station). While held, Pulse In 1 no longer shuffles the layout.
 
 ## One-shot bank
 
