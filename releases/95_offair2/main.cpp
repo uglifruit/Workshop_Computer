@@ -31,7 +31,7 @@
 //   Audio Out 1     : Full mix — tuned audio + whistles + noise + bursts
 //   Audio Out 2     : Noise only
 //   CV Out 1        : Signal strength (envelope — rises as you tune in)
-//   CV Out 2        : Tuning position (mirrors the dial)
+//   CV Out 2        : Broadcast 1 tuning position (slew → CV In 1 to hunt to it)
 //   Pulse Out 1     : Gate HIGH while on any station
 //   Pulse Out 2     : Short trigger each time you newly lock onto a station
 //   Switch Down tap : Cycle band AM → SW → LW (re-randomises dial layout)
@@ -706,8 +706,10 @@ public:
         int32_t sigStr = env1 + env2;
         if (sigStr > 4095) sigStr = 4095;
         CVOut1((int16_t)(sigStr - 2048));
-        // CV Out 2: tuning position (mirrors the dial as bipolar CV).
-        CVOut2((int16_t)(tunePos - 2048));
+        // CV Out 2: tuning position of Broadcast 1 (bipolar). Patch via an external
+        // slew into CV In 1 to slowly tune toward Broadcast 1; tap Pulse In 1 to
+        // re-randomise and it hunts to the new position.
+        CVOut2((int16_t)(dialPos[0] - 2048));
 
         // Pulse Out 1: gate HIGH while on ANY station (broadcast or interference).
         bool onStation = (env1 > kOnThresh) || (env2 > kOnThresh) || (maxIntfEnv > kOnThresh);

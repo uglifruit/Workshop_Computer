@@ -57,7 +57,7 @@ re-randomised each time you change band.
 | Audio Out 1 | Full mix — tuned audio, whistles, static, one-shot bursts |
 | Audio Out 2 | Noise / static only |
 | CV Out 1 | Signal strength — an envelope that rises as you tune onto a station |
-| CV Out 2 | Tuning position — mirrors the dial as CV |
+| CV Out 2 | Broadcast 1's tuning position — patch through a slew into CV In 1 to slowly tune toward Broadcast 1 (re-hunts when Pulse In 1 re-randomises) |
 | Pulse Out 1 | Gate HIGH while on any station |
 | Pulse Out 2 | Short trigger each time you newly lock onto a station |
 
