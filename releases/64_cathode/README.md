@@ -2,7 +2,7 @@
 
 A PAL composite video synthesizer. Generates a live black-and-white picture on any composite-input TV or monitor, driven entirely by Eurorack control voltages and audio signals. The picture reacts to what you patch in — sweep an audio waveform across the screen as an oscilloscope trace, or draw freely with two CV sources as X/Y coordinates.
 
-The image is 1-bit (black/white), rendered through a small **2-bit resistor DAC** built from **Pulse Out 1** and **Pulse Out 2** so the signal has proper composite levels (separate sync, black and white). No extra hardware is needed beyond two resistors and a phono (RCA) cable.
+The image is 1-bit (black/white) at the pixel level, rendered through a small **2-bit resistor DAC** built from **Pulse Out 1** and **Pulse Out 2** so the signal has proper composite levels (separate sync, black and white). Drawing happens in a half-resolution greyscale working buffer that is **spatially dithered** into the 1-bit picture, giving three apparent shades (black / grey / white) — enough for a smooth CRT-style phosphor fade. No extra hardware is needed beyond two resistors and a phono (RCA) cable.
 
 ---
 
@@ -99,9 +99,9 @@ Controls what happens to pixels already on screen between frames.
 
 | Position | Mode | Behaviour |
 |----------|------|-----------|
-| **UP** | Phosphor fade | Pixels gradually dissolve to true black over about 2.4 seconds. A scattered (non-directional) erase covers the whole screen evenly and always reaches full black. |
+| **UP** | Phosphor fade | Each cell's brightness steps down over time (white → grey → black), reaching true black. The greyscale levels make this a smooth-ish CRT-style decay rather than an abrupt clear. ~2.4 s lifetime. |
 | **MIDDLE** | Static | Pixels persist. In scope mode each column is cleared just before redrawing, giving a single clean trace; in etch mode drawings accumulate. |
-| **DOWN** | Snow | Random noise is XORed into the framebuffer each frame — a field of static. Works well combined with the invert gate. |
+| **DOWN** | Snow | Each cell is set to a random brightness (black/grey/white) every frame — a field of greyscale static. Works well combined with the invert gate. |
 
 ---
 
@@ -173,6 +173,8 @@ Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu
 - **Pixel clock:** 144 MHz ÷ (144/7) = **7.000 MHz** exactly. Each pixel is ~142.857 ns. Line period 64.000 µs (PAL spec 64.00 µs). Frame 312 lines = 50 Hz.
 - **2-bit DAC output:** Each pixel is sent as a 2-bit symbol to GPIO 8 (Pu1) and GPIO 9 (Pu2) via PIO `out pins, 2`, summed externally into 3 composite levels (sync / black / white).
 - **Core allocation:** Core 1 is dedicated to video (PIO + DMA) for rock-solid sync; Core 0 runs all Eurorack I/O through ComputerCard at 48 kHz and pushes CV samples to Core 1 via a ring buffer.
-- **Phosphor fade:** the 1-bit framebuffer has no brightness, so fade is a deterministic scattered dissolve — each frame clears a batch of framebuffer bytes stepping by a stride coprime to the buffer size, guaranteeing every pixel reaches true black exactly once per ~2.4s cycle while looking like an even dissolve.
-- **RAM usage:** ~35% of the RP2040's 256 KB, dominated by the two double-buffered PAL word streams (~70 KB) and the framebuffer (~11 KB).
-- **Pixels are taller than wide** (portrait) given 360 columns over the ~52µs active line and 256 rows.
+- **Greyscale via dithering:** all drawing happens in a half-resolution grey buffer (180×128, `GREY_SCALE`-configurable) where each cell holds a brightness 0–2. Each frame it is expanded into the 1-bit framebuffer with a 2×2 spatial dither (L0=00/00 black, L1=01/10 checker grey, L2=11/11 white). The scan-out path reads the resulting 1-bit framebuffer unchanged.
+- **Phosphor fade:** each grey cell's brightness is decremented toward 0 every `FADE_EVERY_N` frames, reaching true black — a deterministic decay (no random residue), ~2.4 s lifetime.
+- **White dilation (analog workaround):** a lone white pixel can't slew to full white through the resistor DAC in one ~143 ns pixel, so it reads grey. After expansion each white pixel is dilated `WHITE_DILATE` pixels to the right, guaranteeing white features are wide enough to render at full brightness. Etch dots are also drawn ≥2 cells wide for the same reason. This trades a little horizontal sharpness for white fidelity — the practical compromise of 1-bit composite.
+- **RAM usage:** ~44% of the RP2040's 256 KB: the two double-buffered PAL word streams (~70 KB), the grey buffer (~23 KB) and the framebuffer (~11 KB).
+- **Pixels are taller than wide** (portrait) given 360 columns over the ~52µs active line and 256 rows; greyscale cells are 2×2 of these.

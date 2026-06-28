@@ -46,6 +46,26 @@
 #define FB_SET(buf, r, c)   ((buf)[(r)*FB_STRIDE + (c)/8] |=  (0x80u >> ((c)&7)))
 #define FB_CLEAR(buf, r, c) ((buf)[(r)*FB_STRIDE + (c)/8] &= ~(0x80u >> ((c)&7)))
 
+// ─── Greyscale working buffer ────────────────────────────────────────────────
+// All drawing happens in a half-resolution grey buffer where each cell holds a
+// brightness 0..GREY_LEVELS-1. Each frame it is expanded into the 1-bit
+// frame_buffer via a GREY_SCALE×GREY_SCALE spatial dither, giving fake greyscale
+// on a 1-bit display (ZX-Spectrum-style). The scan-out path (build_frame_words)
+// is unchanged — it still reads frame_buffer bit by bit.
+//
+// GREY_SCALE is the downscale factor. It MUST divide both FB_WIDTH and FB_HEIGHT.
+// Legal values (common divisors of 360 and 256): 1, 2, 4, 8. Start at 2 (180×128);
+// raise toward 1 (full res) later only after checking RAM (grey buffer = GREY_SIZE).
+#define GREY_SCALE   2
+#define GREY_W       (FB_WIDTH  / GREY_SCALE)   // 180 at scale 2
+#define GREY_H       (FB_HEIGHT / GREY_SCALE)   // 128 at scale 2
+#define GREY_SIZE    (GREY_W * GREY_H)          // 23040 bytes at scale 2
+#define GREY_LEVELS  3                          // 0=black, 1=checker grey, 2=white
+static_assert(FB_WIDTH  % GREY_SCALE == 0, "GREY_SCALE must divide FB_WIDTH");
+static_assert(FB_HEIGHT % GREY_SCALE == 0, "GREY_SCALE must divide FB_HEIGHT");
+
+#define GREY_SET(buf, r, c, lvl) ((buf)[(r)*GREY_W + (c)] = (uint8_t)(lvl))
+
 // ─── PAL line timing (7.000MHz clock, 142.857ns/tick, divider=144/7) ─────────
 // Line = 64µs = 448 ticks. Segments must sum to exactly 448.
 //   fp=12 + hs=33 + bp=40 + av=363 = 448 ✓
@@ -81,6 +101,9 @@ static volatile int active_buf = 0;  // which buffer DMA is currently reading
 
 // ─── Framebuffer (written by Core 1 during vblank) ───────────────────────────
 static uint8_t frame_buffer[FB_SIZE];
+
+// ─── Grey working buffer (Core-1-private; expanded into frame_buffer each frame)
+static uint8_t grey_buffer[GREY_SIZE];
 
 // ─── Etch CV ring buffer (Core 0 pushes @48kHz, Core 1 drains each frame) ─────
 // Captures sub-frame CV motion: each frame Core 1 plots every sample Core 0 queued.
@@ -254,31 +277,111 @@ static void build_frame_words(int back, bool invert) {
 // Called by Core 1 during vblank. Reads from shared, writes to frame_buffer[].
 // ─────────────────────────────────────────────────────────────────────────────
 
-static int scope_x = 0;          // oscilloscope sweep X counter (Core 1 private state)
+static int scope_x = 0;          // oscilloscope sweep X counter (grey-X, Core 1 private)
 static uint32_t etch_read_idx = 0; // Core 1's drain position in the etch CV ring
+static int etch_prev_x = 0, etch_prev_y = 0; // last etch point (for line interpolation)
+static bool etch_have_prev = false;          // false until first etch sample drawn
+#define ETCH_DEADBAND 1   // grey-cell jitter band: ignore moves within ±this of anchor
 
-// ─── Scattered-dissolve phosphor fade (switch UP) ────────────────────────────
-// Clears a fixed number of framebuffer BYTES each frame, stepping through positions
-// with a stride coprime to FB_SIZE. Coprime stride visits every byte exactly once
-// per full cycle → guaranteed true black, with a tunable lifetime. The large stride
-// scatters the cleared bytes spatially, so it reads as an even dissolve (not a
-// directional wipe) — works the same in scope and etch modes.
-//   full cycle = FB_SIZE / ERASE_BYTES_PER_FRAME frames
-//   11520 / 96 = 120 frames = 2.4s at 50fps (avg pixel lifetime ~1.2s)
-// FB_SIZE = 11520 = 2^8·3^2·5. ERASE_STRIDE = 2557 (prime) is coprime → full coverage.
-#define ERASE_BYTES_PER_FRAME 96
-#define ERASE_STRIDE          2557
-static uint32_t erase_pos = 0;   // current dissolve byte position (Core 1 private)
+// ─── Phosphor fade (switch UP) ───────────────────────────────────────────────
+// Each grey cell's brightness is decremented toward 0 (true black). With 3 levels
+// this is only 2 visible steps, so apply it every FADE_EVERY_N frames to stretch
+// the lifetime. lifetime ≈ (GREY_LEVELS-1) × FADE_EVERY_N × 20ms.
+//   FADE_EVERY_N = 60 → 2 × 60 × 20ms = 2.4s
+#define FADE_EVERY_N 60
+static uint32_t fade_div = 0;    // frame counter for the fade divider
 
-// Plot a 3×3 block centred at (px,py), clipped to the framebuffer.
-static inline void plot_dot(int px, int py) {
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            int rx = px + dx, ry = py + dy;
-            if (rx >= 0 && rx < FB_WIDTH && ry >= 0 && ry < FB_HEIGHT) {
-                FB_SET(frame_buffer, ry, rx);
+// ─── 2×2 dither patterns (GREY_SCALE=2) ──────────────────────────────────────
+// Per grey level, the GREY_SCALE-wide bit field for each sub-row (MSB=left).
+//   L0 = 00/00 (black)   L1 = 01/10 (checker grey)   L2 = 11/11 (white)
+// dither[level][sub_row] — only the GREY_SCALE low bits are used.
+static const uint8_t dither[GREY_LEVELS][2] = {
+    /*L0*/ {0b00, 0b00},
+    /*L1*/ {0b01, 0b10},
+    /*L2*/ {0b11, 0b11},
+};
+
+// Right-dilate white by WHITE_DILATE pixels: every white pixel also forces the next
+// WHITE_DILATE pixels to its RIGHT white. Exploits the composite DAC's rising-edge
+// slew — the node only reaches full white when several adjacent pixels are white, so a
+// lone white pixel reads grey. Dilating guarantees every white feature is ≥(1+N)px in
+// scan order → renders full white. MSB = leftmost pixel, so "right" = toward the LSB
+// (right shift). We track a rolling history of the last 8 emitted bits so the dilate
+// crosses byte boundaries for any N up to 7.
+#define WHITE_DILATE 2
+static inline void dilate_white_right(uint8_t *fb) {
+    // 'spill' holds the WHITE_DILATE rightmost source bits of the previous byte,
+    // left-aligned into the top bits, ready to flow into this byte's MSBs.
+    uint16_t prev = 0;   // previous source byte (for cross-byte carry)
+    for (int b = 0; b < FB_STRIDE; b++) {
+        uint8_t v = fb[b];
+        // Build a 16-bit window: [prev_byte][this_byte], MSB-first. OR in right-shifts
+        // 1..N of the window, then take this byte's 8 bits.
+        uint16_t win = (uint16_t)((prev << 8) | v);
+        uint16_t out = win;
+        for (int s = 1; s <= WHITE_DILATE; s++) out |= (win >> s);
+        fb[b] = (uint8_t)(out & 0xFF);
+        prev = v;
+    }
+}
+
+// Expand the grey buffer into the 1-bit frame_buffer using the dither. Driven by
+// output byte: each frame_buffer byte = 8 horizontal pixels = (8/GREY_SCALE) grey
+// cells on one grey row. Must run before build_frame_words() each frame.
+static void __not_in_flash_func(expand_grey_to_fb)() {
+    const int cells_per_byte = 8 / GREY_SCALE;       // 4 at scale 2
+    for (int gy = 0; gy < GREY_H; gy++) {
+        const uint8_t *grow = &grey_buffer[gy * GREY_W];
+        for (int sub = 0; sub < GREY_SCALE; sub++) {
+            int fb_row = gy * GREY_SCALE + sub;
+            uint8_t *fb = &frame_buffer[fb_row * FB_STRIDE];
+            int cell = 0;
+            for (int b = 0; b < FB_STRIDE; b++) {
+                uint8_t byte = 0;
+                for (int k = 0; k < cells_per_byte; k++) {
+                    byte = (uint8_t)((byte << GREY_SCALE) | dither[grow[cell++]][sub]);
+                }
+                fb[b] = byte;
+            }
+#if WHITE_DILATE
+            dilate_white_right(fb);
+#endif
+        }
+    }
+}
+
+// Plot a dot in the GREY buffer at grey-cell (gx,gy), value level, clipped.
+// Each dot is DOT_W×DOT_H grey cells, anchored at (gx,gy) and extending right/down.
+// DOT_W=2 makes every etch point ≥4px wide (≥6px after dilation), so single points
+// render robustly full-white regardless of where they fall vs the TV's sample clock
+// (a 1-cell/2px point lands on a "bad" phase at some X and reads grey).
+#define DOT_W 2
+#define DOT_H 1
+static inline void plot_dot(int gx, int gy, uint8_t level) {
+    for (int dy = 0; dy < DOT_H; dy++) {
+        for (int dx = 0; dx < DOT_W; dx++) {
+            int rx = gx + dx, ry = gy + dy;
+            if (rx >= 0 && rx < GREY_W && ry >= 0 && ry < GREY_H) {
+                GREY_SET(grey_buffer, ry, rx, level);
             }
         }
+    }
+}
+
+// Draw a line from (x0,y0) to (x1,y1) in the grey buffer (Bresenham), so fast CV
+// motion draws a continuous curve instead of sparse dots. Endpoints are grey cells.
+static void __not_in_flash_func(draw_line)(int x0, int y0, int x1, int y1, uint8_t level) {
+    int adx = x1 - x0; if (adx < 0) adx = -adx;
+    int ady = y1 - y0; if (ady < 0) ady = -ady;
+    int dx =  adx, sx = x0 < x1 ? 1 : -1;
+    int dy = -ady, sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    for (;;) {
+        plot_dot(x0, y0, level);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
     }
 }
 
@@ -313,87 +416,101 @@ static void __not_in_flash_func(update_framebuffer)() {
     int32_t  ky      = shared.knob_y_scale;
     uint8_t  sw      = shared.sw_position;
 
-    // Pulse In 1: clear framebuffer (atomic read-clear)
+    // Pulse In 1: clear grey buffer (atomic read-clear)
     if (shared.pulse_clear) {
         shared.pulse_clear = false;
-        memset(frame_buffer, 0, FB_SIZE);
+        memset(grey_buffer, 0, GREY_SIZE);
         scope_x = 0;
+        etch_have_prev = false;   // don't connect a line across the clear
     }
 
-    // Switch: apply background effect before drawing
+    // Switch: apply background effect (in grey domain) before drawing
     switch (sw) {
-        case 0: // UP — scattered-dissolve phosphor fade. Clear ERASE_BYTES_PER_FRAME
-                // bytes per frame, stepping by a coprime stride so every byte is
-                // visited exactly once per full cycle → guaranteed true black, even
-                // dissolve, no directional wipe. Same in scope and etch modes.
-            for (int n = 0; n < ERASE_BYTES_PER_FRAME; n++) {
-                frame_buffer[erase_pos] = 0;
-                erase_pos += ERASE_STRIDE;
-                if (erase_pos >= FB_SIZE) erase_pos -= FB_SIZE;
+        case 0: // UP — phosphor fade: decrement each grey cell toward black, every
+                // FADE_EVERY_N frames. Guaranteed true black; tunable lifetime.
+            if (++fade_div >= FADE_EVERY_N) {
+                fade_div = 0;
+                for (int i = 0; i < GREY_SIZE; i++) {
+                    if (grey_buffer[i]) grey_buffer[i]--;
+                }
             }
             break;
         case 1: // MIDDLE — static, no modification
             break;
-        case 2: // DOWN — snow (inject random noise)
-            for (int i = 0; i < FB_SIZE; i += 4) {
-                uint32_t rnd = lcg_rand();
-                frame_buffer[i]   ^= (uint8_t)(rnd);
-                frame_buffer[i+1] ^= (uint8_t)(rnd >> 8);
-                frame_buffer[i+2] ^= (uint8_t)(rnd >> 16);
-                frame_buffer[i+3] ^= (uint8_t)(rnd >> 24);
+        case 2: // DOWN — snow: write a random grey level into every cell
+            for (int i = 0; i < GREY_SIZE; i++) {
+                grey_buffer[i] = (uint8_t)(lcg_rand() % GREY_LEVELS);
             }
             break;
     }
 
-    // Draw one pixel per frame based on mode
+    // Draw based on mode (all in grey-cell coordinates)
     if (mode == 0) {
-        // Oscilloscope: sweep several columns/frame, draw a vertical line from
-        // screen centre to the sampled audio level (classic CRO look).
-        const int SCOPE_COLS_PER_FRAME = 4;   // ~1.8s full sweep at 50Hz
-        const int mid = (FB_HEIGHT - 1) / 2;
-        for (int n = 0; n < SCOPE_COLS_PER_FRAME; n++) {
-            int px = scope_x;
-            scope_x = (scope_x + 1) % FB_WIDTH;
+        etch_have_prev = false;   // in scope mode: next etch sample starts fresh
+        // Oscilloscope: sweep a fixed-width bar/frame, drawn from mid-row to the
+        // sampled audio level at white (L2). Bars are SCOPE_BAR_W grey cells wide so
+        // each white feature is wide enough for the DAC to charge to FULL white —
+        // a 1-cell (2px) bar can't rise to white through the resistor network in
+        // ~285ns, so it reads grey. SCOPE_BAR_W=2 → 4px bars charge fully.
+        #define SCOPE_BAR_W 2
+        const int mid = (GREY_H - 1) / 2;
+        int gpy = map_adc(audio_y, GREY_H - 1);
+        gpy = clamp(gpy, 0, GREY_H - 1);
+        int lo = gpy < mid ? gpy : mid;
+        int hi = gpy < mid ? mid : gpy;
+        for (int n = 0; n < SCOPE_BAR_W; n++) {
+            int gx = scope_x;
+            scope_x = (scope_x + 1) % GREY_W;
 
-            // Static (sw==1): force-clear the column so only a single clean trace
-            // shows. Fade (sw==0) is handled by the scattered dissolve above (don't
-            // wipe here or the trail vanishes). Snow (sw==2) leaves noise untouched.
+            // Static (sw==1): clear the grey column for a single clean trace.
+            // Fade (sw==0) leaves the trail to the fade; snow leaves noise.
             if (sw == 1) {
-                for (int row = 0; row < FB_HEIGHT; row++) {
-                    FB_CLEAR(frame_buffer, row, px);
+                for (int gy = 0; gy < GREY_H; gy++) {
+                    GREY_SET(grey_buffer, gy, gx, 0);
                 }
             }
-
-            int py = map_adc(audio_y, FB_HEIGHT - 1);
-            py = clamp(py, 0, FB_HEIGHT - 1);
-            // Fill from centre to sample so the trace reads as a solid waveform
-            int lo = py < mid ? py : mid;
-            int hi = py < mid ? mid : py;
-            for (int row = lo; row <= hi; row++) {
-                FB_SET(frame_buffer, row, px);
+            for (int gy = lo; gy <= hi; gy++) {
+                GREY_SET(grey_buffer, gy, gx, GREY_LEVELS - 1);
             }
         }
     } else {
-        // Etch-a-sketch: drain every CV sample Core 0 queued since last frame and
-        // plot each one — captures fast gestures that one-dot-per-frame would miss.
+        // Etch-a-sketch: drain every CV sample Core 0 queued and plot at white (L2).
         uint32_t w = etch_write_idx;        // snapshot Core 0's write head
         uint32_t avail = w - etch_read_idx; // unsigned wrap-safe count
         if (avail > ETCH_RING_SIZE) {       // overran: only the last RING_SIZE survive
             etch_read_idx = w - ETCH_RING_SIZE;
-            avail = ETCH_RING_SIZE;
         }
         while (etch_read_idx != w) {
             uint32_t slot = etch_read_idx & ETCH_RING_MASK;
             int32_t rx = etch_x_ring[slot];
             int32_t ry = etch_y_ring[slot];
-            int px = (int)map_knob_offset_cv(rx, kx, FB_WIDTH  - 1);
-            int py = (int)map_knob_offset_cv(ry, ky, FB_HEIGHT - 1);
-            px = clamp(px, 0, FB_WIDTH  - 1);
-            py = clamp(py, 0, FB_HEIGHT - 1);
-            plot_dot(px, py);
+            int gx = (int)map_knob_offset_cv(rx, kx, GREY_W - 1);
+            int gy = (int)map_knob_offset_cv(ry, ky, GREY_H - 1);
+            gx = clamp(gx, 0, GREY_W - 1);
+            gy = clamp(gy, 0, GREY_H - 1);
             etch_read_idx++;
+
+            // Deadband: ignore samples within ETCH_DEADBAND cells of the last anchor.
+            // CV In has ±1–2 LSB jitter; at half-res that flips the cell and, with the
+            // line interpolation accumulating in static mode, paints a parallel ghost
+            // line. Only commit a new anchor once CV genuinely moves beyond the band —
+            // and DON'T update the anchor when skipping, so wobble can't drift it.
+            if (etch_have_prev) {
+                int adx = gx - etch_prev_x; if (adx < 0) adx = -adx;
+                int ady = gy - etch_prev_y; if (ady < 0) ady = -ady;
+                if (adx <= ETCH_DEADBAND && ady <= ETCH_DEADBAND) continue;
+                draw_line(etch_prev_x, etch_prev_y, gx, gy, GREY_LEVELS - 1);
+            } else {
+                plot_dot(gx, gy, GREY_LEVELS - 1);
+            }
+            etch_prev_x = gx;
+            etch_prev_y = gy;
+            etch_have_prev = true;
         }
     }
+
+    // Expand grey buffer → 1-bit frame_buffer (must finish before build_frame_words)
+    expand_grey_to_fb();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -446,7 +563,9 @@ static void __not_in_flash_func(core1_main)() {
     dma_channel_claim(dma_chan);
 
     // Build initial frame (back buffer = 1, active = 0)
+    memset(grey_buffer, 0, GREY_SIZE);
     memset(frame_buffer, 0, FB_SIZE);
+    expand_grey_to_fb();          // ensure frame_buffer is valid before first pack
     build_frame_words(0, false);
     build_frame_words(1, false);
     active_buf = 0;
