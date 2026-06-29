@@ -135,6 +135,7 @@ struct SharedState {
     volatile int32_t  etch_offset_y; // 0..GREY_H-1
     volatile int32_t  etch_cvgain_x; // CV→grey gain (>>12): scale·(GREY_W-1)·4096/(256·4095)
     volatile int32_t  etch_cvgain_y; // (>>12): scale·(GREY_H-1)·4096/(256·4095)
+    volatile int32_t  scope_audio_scale; // Y knob in scope: 0..512 (256 = 1×, max 2×) audio gain
     volatile int32_t  knob_main;     // KnobVal(Main): 0..4095 (far-CCW=etch, else scope speed)
     volatile bool     pulse_clear;   // set on Pulse In 1 rising edge
     volatile bool     pulse_invert;  // true while Pulse In 2 is HIGH
@@ -142,17 +143,21 @@ struct SharedState {
 };
 static SharedState shared;
 
-// ─── Dual-function knob pickup (Core 0) ───────────────────────────────────────
-// Each X/Y knob controls SCALE (switch UP/MIDDLE) or OFFSET (switch DOWN). When the
-// switch flips which param a knob drives, the param holds its stored value until the
-// knob is physically moved past PICKUP_THRESH ("pickup"), preventing a jump.
+// ─── Multi-function knob pickup (Core 0) ──────────────────────────────────────
+// A knob's destination depends on mode+switch. When it changes, the newly-bound param
+// holds its stored value until the knob is physically moved past PICKUP_THRESH
+// ("pickup"), preventing a jump. Each destination keeps its own stored value.
+// Destinations: SCALE (etch CV scale, UP/MID), OFFSET (etch position, DOWN),
+//               AUDIO (scope trace audio scale, Y knob only, UP/MID).
 #define PICKUP_THRESH   64       // raw knob movement (of 4095) needed to grab control
 #define PICK_SCALE      0
 #define PICK_OFFSET     1
+#define PICK_AUDIO      2
 struct KnobPick {
     int32_t stored_offset;       // grey coords
-    int32_t stored_scale;        // 0..256 (8.8 of 1.0)
-    uint8_t bound;               // PICK_SCALE or PICK_OFFSET (current destination)
+    int32_t stored_scale;        // 0..1024 (256 = 1×)  — etch CV scale
+    int32_t stored_audio;        // 0..512 (256 = 1×, max 2×) — scope audio scale (Y only)
+    uint8_t bound;               // current destination (PICK_*)
     int32_t bind_raw;            // raw knob value captured at last bind change
     bool    captured;            // false until knob moves past threshold after a switch
 };
@@ -520,6 +525,7 @@ static void __not_in_flash_func(update_framebuffer)() {
             (uint32_t)((int64_t)(SCOPE_STEP_FAST - SCOPE_STEP_SLOW) * kpos / kspan);
 
         const int mid = (GREY_H - 1) / 2;
+        int32_t ascale = shared.scope_audio_scale;   // Y knob: audio gain (256 = 1×)
 
         // Advance the sweep by `step` (8.8). For each whole column crossed, pull a
         // FRESH audio sample (so fast sweeps draw a real waveform, not one fat bar/
@@ -553,7 +559,10 @@ static void __not_in_flash_func(update_framebuffer)() {
             }
             consumed++;
 
-            int gpy = map_adc(a, GREY_H - 1);
+            // Scale audio around 0 by the Y-knob gain (256 = 1×), then map to a row
+            // with +ve voltage going UP (row 0 = top): gpy = mid - scaled·mid/2048.
+            int32_t sc = ((int32_t)a * ascale) >> 8;        // gain applied around 0
+            int gpy = mid - (int)((sc * mid) / 2048);       // invert: +ve = up
             gpy = clamp(gpy, 0, GREY_H - 1);
             int lo = gpy < mid ? gpy : mid;
             int hi = gpy < mid ? mid : gpy;
@@ -788,15 +797,23 @@ public:
         static uint32_t boot_ctr = 0;
         static KnobPick pkX, pkY;
         static bool pick_init = false;
-        if (!pick_init) {   // sensible defaults: centred offset, full-range scale
-            pkX = { (GREY_W-1)/2, 256, PICK_SCALE, 0, true };
-            pkY = { (GREY_H-1)/2, 256, PICK_SCALE, 0, true };
+        if (!pick_init) {   // defaults: centred offset, unity scale & audio (256 = 1×)
+            pkX = { (GREY_W-1)/2, 256, 256, PICK_SCALE, 0, true };
+            pkY = { (GREY_H-1)/2, 256, 256, PICK_SCALE, 0, true };
             pick_init = true;
         }
-        uint8_t desired = (shared.sw_position == 2) ? PICK_OFFSET : PICK_SCALE;
+        bool down = (shared.sw_position == 2);
+        bool etch_mode = (shared.knob_main < ETCH_THRESH);
+        // X knob: etch → SCALE(up/mid)/OFFSET(down). In scope X is idle (stays SCALE).
+        uint8_t desiredX = down ? PICK_OFFSET : PICK_SCALE;
+        // Y knob: etch same as X; scope (up/mid) → AUDIO scale; scope+down → leave bound.
+        uint8_t desiredY;
+        if (etch_mode) desiredY = down ? PICK_OFFSET : PICK_SCALE;
+        else           desiredY = down ? PICK_OFFSET : PICK_AUDIO;   // scope: Y = audio gain
 
-        auto run_pick = [&](KnobPick &p, int32_t raw, int32_t maxpos, bool invert_offset) {
-            if (desired != p.bound) {          // switch changed this knob's destination
+        auto run_pick = [&](KnobPick &p, int32_t raw, int32_t maxpos, uint8_t desired,
+                            bool invert_offset) {
+            if (desired != p.bound) {          // destination changed (mode/switch)
                 p.bound = desired;
                 p.bind_raw = raw;              // remember physical position now
                 p.captured = false;           // hold stored value until knob moves
@@ -809,18 +826,19 @@ public:
                 if (p.bound == PICK_OFFSET) {
                     int32_t off = (raw * maxpos) / 4095;
                     p.stored_offset = invert_offset ? (maxpos - off) : off;  // Y flips
+                } else if (p.bound == PICK_AUDIO) {
+                    p.stored_audio = (raw * 512) / 4095;    // 0..2× audio gain (256 = 1×)
+                } else { // PICK_SCALE: 0..1024 (256=1×) attenuate/boost CV up to 4×
+                    p.stored_scale = (raw * 1024) / 4095;
                 }
-                // SCALE: 0..1024 where 256 = unity (1×). So the knob can ATTENUATE
-                // (below ~1/4 travel) AND BOOST up to 4× — useful when CV In is small.
-                else p.stored_scale = (raw * 1024) / 4095;
             }
         };
 
         if (boot_ctr < 4800) {
             boot_ctr++;
         } else {
-            run_pick(pkX, KnobVal(Knob::X), GREY_W - 1, false);
-            run_pick(pkY, KnobVal(Knob::Y), GREY_H - 1, true);  // Y offset inverted (DOWN)
+            run_pick(pkX, KnobVal(Knob::X), GREY_W - 1, desiredX, false);
+            run_pick(pkY, KnobVal(Knob::Y), GREY_H - 1, desiredY, true); // Y offset inverted
         }
 
         // Publish resolved etch mapping. cvgain is 12.12 fixed: Core 1 does
@@ -830,6 +848,7 @@ public:
         shared.etch_offset_y = pkY.stored_offset;
         shared.etch_cvgain_x = (int32_t)((int64_t)pkX.stored_scale * (GREY_W - 1) * 4096 / (256 * 4095));
         shared.etch_cvgain_y = (int32_t)((int64_t)pkY.stored_scale * (GREY_H - 1) * 4096 / (256 * 4095));
+        shared.scope_audio_scale = pkY.stored_audio;   // Y knob in scope: 0..1024 (256=1×)
 
         bool etch = (shared.knob_main < ETCH_THRESH);
         LedOn(0, !etch);               // scope mode
