@@ -17,12 +17,12 @@ Cathode Ray solves this by summing **two** pulse outputs through weighted resist
 ```
 Pulse Out 1 (Pu1) ──[ 1kΩ  ]──┐
                               ├──── RCA centre pin ──── TV composite in
-Pulse Out 2 (Pu2) ──[ 470Ω ]──┘
+Pulse Out 2 (Pu2) ──[ 220Ω ]──┘
 Workshop Computer GND ─────────────── RCA shell    ──── TV composite GND
 ```
 
 - **Pu1 via 1kΩ** provides the small "black" pedestal step above sync.
-- **Pu2 via 470Ω** provides the larger step up to white.
+- **Pu2 via 220Ω** provides the larger step up to white.
 - The **75Ω** TV input is the bottom leg of the divider.
 - All grounds are common: 3.5mm sleeve → RCA shell.
 
@@ -36,7 +36,7 @@ The firmware drives both pins together as a 2-bit symbol per pixel, producing:
 
 ### Tuning
 
-Exact voltages depend on your resistors and the TV. If the picture works but contrast is weak, or thin/fast white details look grey, **lower the 470Ω** (white pin) toward 330Ω or 220Ω so the signal reaches full white faster. If black looks too light, raise the 1kΩ slightly. If sync drops out, the black pedestal is too small (1kΩ too high) — bring it back down. All polarity/level tuning in firmware lives in a single `level_pair[]` table in `main.cpp`.
+Exact voltages depend on your resistors and the TV. The white pin (Pu2) is **220Ω** here, chosen so thin/fast white details reach full white quickly; 330Ω–470Ω also work but give softer/greyer fine detail. If black looks too light, raise the 1kΩ slightly. If sync drops out, the black pedestal is too small (1kΩ too high) — bring it back down. All polarity/level tuning in firmware lives in a single `level_pair[]` table in `main.cpp`.
 
 ### Building the cable
 
@@ -72,7 +72,7 @@ The signal is **PAL** (50Hz). Displays locked to NTSC-only will not show it; mos
 | Jack | Function |
 |------|----------|
 | Pulse Out 1 | Composite video — DAC bit 0 (via 1kΩ). |
-| Pulse Out 2 | Composite video — DAC bit 1 (via 470Ω). |
+| Pulse Out 2 | Composite video — DAC bit 1 (via 220Ω). |
 
 Both pulse outputs are consumed by the video DAC and are not available as normal pulse outputs while this firmware runs.
 
@@ -166,7 +166,7 @@ Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu
 
 ## Getting Started
 
-1. Wire the resistor DAC: Pu1 via 1kΩ and Pu2 via 470Ω, both into the RCA centre pin; all grounds to the RCA shell.
+1. Wire the resistor DAC: Pu1 via 1kΩ and Pu2 via 220Ω, both into the RCA centre pin; all grounds to the RCA shell.
 2. Turn the TV on and select the composite input. You should see a stable black screen immediately. If the picture rolls or there is no sync, recheck the resistors and grounds.
 3. Set the Switch to **MIDDLE** (static).
 4. Turn the Main Knob to the **upper range** (oscilloscope) and patch any audio into **Audio In 1** — you'll see the waveform sweep across. Knob position sets sweep speed; Knob Y sets the trace gain.

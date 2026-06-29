@@ -9,7 +9,7 @@
 // Video output: 2-bit resistor DAC on GPIO 8 (Pulse Out 1) + GPIO 9 (Pulse Out 2).
 //   Pu1 ──[1k ]──┐
 //                ├── RCA centre ── composite in (TV internal 75Ω to GND)
-//   Pu2 ──[470R]──┘
+//   Pu2 ──[220R]──┘
 //   GND ───────────── RCA shell
 // 4 summed levels (3 used): sync 0V / black ~0.3V / white ~1.0V. Pulse Out 2 is
 // now consumed by video — it is no longer a usable normal pulse output.
@@ -194,7 +194,7 @@ static inline uint32_t lcg_rand() {
 //   SYNC  = 0b11 → both pins LOW  → 0V (sync tip)
 //   BLACK = 0b10 → Pu1 HIGH via 1kΩ only → smallest lift above sync = black pedestal
 //   WHITE = 0b00 → both pins HIGH → brightest
-// (0b01 = Pu2 via 470Ω = a BRIGHTER grey — was the old too-light "black".)
+// (0b01 = Pu2 via 220Ω = a BRIGHTER grey — was the old too-light "black".)
 // Retune the DAC by editing ONLY this table. If the scope shows GPIO8/9 swapped,
 // swap the two bits within each entry — never touch the packing loop.
 enum Level { SYNC = 0, BLACK = 1, WHITE = 2 };
