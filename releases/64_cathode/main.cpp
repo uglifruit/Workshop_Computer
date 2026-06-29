@@ -136,6 +136,7 @@ struct SharedState {
     volatile int32_t  etch_cvgain_x; // CV→grey gain (>>12): scale·(GREY_W-1)·4096/(256·4095)
     volatile int32_t  etch_cvgain_y; // (>>12): scale·(GREY_H-1)·4096/(256·4095)
     volatile int32_t  scope_audio_scale; // Y knob in scope: 0..512 (256 = 1×, max 2×) audio gain
+    volatile int32_t  scope_baseline;    // X knob in scope: 0..GREY_H-1 centre-line row
     volatile int32_t  knob_main;     // KnobVal(Main): 0..4095 (far-CCW=etch, else scope speed)
     volatile bool     pulse_clear;   // set on Pulse In 1 rising edge
     volatile bool     pulse_invert;  // true while Pulse In 2 is HIGH
@@ -147,16 +148,18 @@ static SharedState shared;
 // A knob's destination depends on mode+switch. When it changes, the newly-bound param
 // holds its stored value until the knob is physically moved past PICKUP_THRESH
 // ("pickup"), preventing a jump. Each destination keeps its own stored value.
-// Destinations: SCALE (etch CV scale, UP/MID), OFFSET (etch position, DOWN),
-//               AUDIO (scope trace audio scale, Y knob only, UP/MID).
+// Destinations: SCALE (etch CV scale, UP), OFFSET (etch position, MID),
+//   AUDIO (scope Y audio gain), BASELINE (scope X = centre-line vertical position).
 #define PICKUP_THRESH   64       // raw knob movement (of 4095) needed to grab control
 #define PICK_SCALE      0
 #define PICK_OFFSET     1
 #define PICK_AUDIO      2
+#define PICK_BASELINE   3
 struct KnobPick {
-    int32_t stored_offset;       // grey coords
+    int32_t stored_offset;       // grey coords — etch X/Y position
     int32_t stored_scale;        // 0..1024 (256 = 1×)  — etch CV scale
     int32_t stored_audio;        // 0..512 (256 = 1×, max 2×) — scope audio scale (Y only)
+    int32_t stored_baseline;     // 0..GREY_H-1 — scope centre-line vertical pos (X only)
     uint8_t bound;               // current destination (PICK_*)
     int32_t bind_raw;            // raw knob value captured at last bind change
     bool    captured;            // false until knob moves past threshold after a switch
@@ -310,6 +313,15 @@ static void build_frame_words(int back, bool invert) {
 // Framebuffer drawing
 // Called by Core 1 during vblank. Reads from shared, writes to frame_buffer[].
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─── Performance effects (switch DOWN, momentary) ────────────────────────────
+// Each DOWN press cycles to the next effect; holding DOWN runs the current one.
+enum { FX_STROBE, FX_FREEZE_BLACK, FX_FREEZE_WHITE, FX_SWAP_XY, FX_SNOW, FX_CORRUPT,
+       FX_COUNT };
+static int  fx_index = 0;          // which effect the next DOWN-hold runs
+static bool fx_prev_down = false;  // edge detect for "new DOWN press"
+static bool effect_invert = false; // strobe: OR'd into build_frame_words invert
+static uint32_t fx_phase = 0;      // generic per-effect frame counter
 
 // ─── Oscilloscope sweep (knob-controlled speed, fixed-point accumulator) ──────
 // scope_x is the integer sweep column. scope_acc accumulates fractional columns each
@@ -483,6 +495,31 @@ static inline int32_t map_knob_offset_cv(int32_t cv, int32_t knob, int32_t max_o
 static inline void fade_step() {
     for (int i = 0; i < GREY_SIZE; i++) if (grey_buffer[i]) grey_buffer[i]--;
 }
+// Increment every grey cell toward white (one bloom step).
+static inline void bloom_step() {
+    for (int i = 0; i < GREY_SIZE; i++) if (grey_buffer[i] < GREY_LEVELS-1) grey_buffer[i]++;
+}
+// Corrupt: dramatic glitch — shift rows by random amounts, smear, and inject noise
+// blocks. Rewrites grey_buffer in place each frame for a churning broken-signal look.
+static void __not_in_flash_func(corrupt_step)() {
+    for (int gy = 0; gy < GREY_H; gy++) {
+        uint32_t r = lcg_rand();
+        if ((r & 7) == 0) {                          // ~1/8 rows: blank or random-fill
+            uint8_t v = (r >> 8) & 1 ? (GREY_LEVELS-1) : 0;
+            for (int gx = 0; gx < GREY_W; gx++) grey_buffer[gy*GREY_W + gx] = v;
+        } else {                                     // else: cyclically shift the row
+            int sh = (int)((r >> 4) % GREY_W);
+            uint8_t *row = &grey_buffer[gy*GREY_W];
+            // rotate-by-sh via a one-pass temp on the stack (GREY_W=180)
+            uint8_t tmp[GREY_W];
+            for (int gx = 0; gx < GREY_W; gx++) tmp[gx] = row[(gx+sh) % GREY_W];
+            for (int gx = 0; gx < GREY_W; gx++) row[gx] = tmp[gx];
+            if ((r & 0x30) == 0) {                    // occasional noise speckle in the row
+                for (int n = 0; n < 8; n++) row[(lcg_rand()) % GREY_W] = lcg_rand() % GREY_LEVELS;
+            }
+        }
+    }
+}
 
 static void __not_in_flash_func(update_framebuffer)() {
     // Snapshot volatile shared state once. (CV is read per-sample from the etch
@@ -503,16 +540,41 @@ static void __not_in_flash_func(update_framebuffer)() {
         etch_have_prev = false;   // don't connect a line across the clear
     }
 
-    // Switch DOWN (momentary) = WIPE-OUT performance gesture: rapidly ramp the whole
-    // screen to black over ~0.8s while held (decrement every WIPE_EVERY frames). New
-    // drawing still happens on top, so you can "draw through" a wipe. Applies in both
-    // modes and overrides the normal per-mode fade timing below.
-    bool wiping = (sw == 2);
-    if (wiping) {
-        // 0.8s to clear a full (level-4) cell = 4 decrements / 40 frames → every 10.
-        #define WIPE_EVERY 10
-        if (++fade_cols >= WIPE_EVERY) { fade_cols = 0; fade_step(); }
+    // Switch DOWN (momentary) = PERFORMANCE EFFECT. Each new DOWN press cycles to the
+    // next effect (fx_index); holding DOWN runs the current one. effect_invert (strobe)
+    // is consumed in the Core 1 loop. swap_xy is honoured by the etch branch below.
+    bool down = (sw == 2);
+    if (down && !fx_prev_down) {            // rising edge: advance to next effect
+        fx_index = (fx_index + 1) % FX_COUNT;
+        fx_phase = 0;
     }
+    bool swap_xy = false;
+    effect_invert = false;                  // default; strobe sets it per-frame
+    if (down) {
+        fx_phase++;
+        switch (fx_index) {
+            case FX_STROBE:                 // rapid whole-screen flash; freeze drawing
+                effect_invert = (fx_phase & 2);   // toggle every 2 frames (~12Hz)
+                expand_grey_to_fb(); fx_prev_down = true; return;
+            case FX_FREEZE_BLACK:           // freeze + fade to black ~0.3s
+                if ((fx_phase & 3) == 0) fade_step();
+                expand_grey_to_fb(); fx_prev_down = true; return;
+            case FX_FREEZE_WHITE:           // freeze + bloom to white ~0.3s
+                if ((fx_phase & 3) == 0) bloom_step();
+                expand_grey_to_fb(); fx_prev_down = true; return;
+            case FX_SNOW:                   // fill with random levels each frame
+                for (int i = 0; i < GREY_SIZE; i++)
+                    grey_buffer[i] = (uint8_t)(lcg_rand() % GREY_LEVELS);
+                expand_grey_to_fb(); fx_prev_down = true; return;
+            case FX_CORRUPT:                // dramatic glitch
+                corrupt_step();
+                expand_grey_to_fb(); fx_prev_down = true; return;
+            case FX_SWAP_XY:                // transpose etch axes; keep drawing (fall through)
+                swap_xy = true;
+                break;
+        }
+    }
+    fx_prev_down = down;
 
     if (!etch) {
         etch_have_prev = false;   // in scope mode: next etch sample starts fresh
@@ -524,7 +586,8 @@ static void __not_in_flash_func(update_framebuffer)() {
         uint32_t step = SCOPE_STEP_SLOW +
             (uint32_t)((int64_t)(SCOPE_STEP_FAST - SCOPE_STEP_SLOW) * kpos / kspan);
 
-        const int mid = (GREY_H - 1) / 2;
+        // Centre line (0V baseline) row is set by the X knob in scope mode.
+        const int mid = clamp(shared.scope_baseline, 0, GREY_H - 1);
         int32_t ascale = shared.scope_audio_scale;   // Y knob: audio gain (256 = 1×)
 
         // Advance the sweep by `step` (8.8). For each whole column crossed, pull a
@@ -545,7 +608,9 @@ static void __not_in_flash_func(update_framebuffer)() {
         while (scope_acc >= 256) {
             scope_acc -= 256;
             int gx = scope_x;
-            scope_x = (scope_x + 1) % GREY_W;
+            // FX_SWAP_XY in scope = reverse sweep direction while held.
+            if (swap_xy) scope_x = (scope_x + GREY_W - 1) % GREY_W;  // step left
+            else         scope_x = (scope_x + 1) % GREY_W;           // step right
 
             // Pick this column's audio sample. If we have at least as many fresh
             // samples as columns, step through them evenly; else take the latest.
@@ -592,6 +657,7 @@ static void __not_in_flash_func(update_framebuffer)() {
             // pos = offset + (cv * cvgain) >> 12.  offset & cvgain resolved on Core 0.
             int gx = ox + (int)((rx * gxn) >> 12);
             int gy = oy + (int)((ry * gyn) >> 12);
+            if (swap_xy) { int t = gx; gx = gy; gy = t; }   // FX_SWAP_XY: transpose axes
             gx = clamp(gx, 0, GREY_W - 1);
             gy = clamp(gy, 0, GREY_H - 1);
             etch_read_idx++;
@@ -727,7 +793,7 @@ static void __not_in_flash_func(core1_main)() {
 
         // Build new word stream into back buffer
         int back = 1 - active_buf;
-        bool invert = shared.pulse_invert;
+        bool invert = shared.pulse_invert ^ effect_invert;  // strobe XORs in
         build_frame_words(back, invert);
 
         // Swap buffers: next DMA IRQ handler will restart using the new active_buf.
@@ -797,19 +863,30 @@ public:
         static uint32_t boot_ctr = 0;
         static KnobPick pkX, pkY;
         static bool pick_init = false;
-        if (!pick_init) {   // defaults: centred offset, unity scale & audio (256 = 1×)
-            pkX = { (GREY_W-1)/2, 256, 256, PICK_SCALE, 0, true };
-            pkY = { (GREY_H-1)/2, 256, 256, PICK_SCALE, 0, true };
+        if (!pick_init) {   // defaults: centred offset/baseline, unity scale & audio
+            //     offset,        scale, audio, baseline,        bound,      bind, captured
+            pkX = { (GREY_W-1)/2, 256,   256,   (GREY_H-1)/2,    PICK_SCALE, 0,    true };
+            pkY = { (GREY_H-1)/2, 256,   256,   (GREY_H-1)/2,    PICK_SCALE, 0,    true };
             pick_init = true;
         }
-        bool down = (shared.sw_position == 2);
+        uint8_t swp = shared.sw_position;     // 0=UP 1=MID 2=DOWN
+        bool down = (swp == 2);
         bool etch_mode = (shared.knob_main < ETCH_THRESH);
-        // X knob: etch → SCALE(up/mid)/OFFSET(down). In scope X is idle (stays SCALE).
-        uint8_t desiredX = down ? PICK_OFFSET : PICK_SCALE;
-        // Y knob: etch same as X; scope (up/mid) → AUDIO scale; scope+down → leave bound.
-        uint8_t desiredY;
-        if (etch_mode) desiredY = down ? PICK_OFFSET : PICK_SCALE;
-        else           desiredY = down ? PICK_OFFSET : PICK_AUDIO;   // scope: Y = audio gain
+        // Knob destinations by mode + switch:
+        //   ETCH + UP  → both SCALE      ETCH + MID → both OFFSET
+        //   SCOPE(up/mid) → X = OFFSET (centre-line vertical pos), Y = AUDIO gain
+        //   DOWN → performance effect; knobs hold their current binding (no change).
+        uint8_t desiredX, desiredY;
+        if (etch_mode) {
+            desiredX = desiredY = (swp == 0) ? PICK_SCALE : PICK_OFFSET;  // UP=scale, MID=offset
+        } else {
+            desiredX = PICK_BASELINE; // scope: X = baseline vertical position
+            desiredY = PICK_AUDIO;    // scope: Y = audio gain
+        }
+        if (down) {                   // DOWN drives the effect; freeze knob bindings
+            desiredX = pkX.bound;
+            desiredY = pkY.bound;
+        }
 
         auto run_pick = [&](KnobPick &p, int32_t raw, int32_t maxpos, uint8_t desired,
                             bool invert_offset) {
@@ -828,6 +905,9 @@ public:
                     p.stored_offset = invert_offset ? (maxpos - off) : off;  // Y flips
                 } else if (p.bound == PICK_AUDIO) {
                     p.stored_audio = (raw * 512) / 4095;    // 0..2× audio gain (256 = 1×)
+                } else if (p.bound == PICK_BASELINE) {
+                    // scope centre-line vertical position, 0..GREY_H-1 (0V baseline row)
+                    p.stored_baseline = (raw * (GREY_H - 1)) / 4095;
                 } else { // PICK_SCALE: 0..1024 (256=1×) attenuate/boost CV up to 4×
                     p.stored_scale = (raw * 1024) / 4095;
                 }
@@ -848,14 +928,15 @@ public:
         shared.etch_offset_y = pkY.stored_offset;
         shared.etch_cvgain_x = (int32_t)((int64_t)pkX.stored_scale * (GREY_W - 1) * 4096 / (256 * 4095));
         shared.etch_cvgain_y = (int32_t)((int64_t)pkY.stored_scale * (GREY_H - 1) * 4096 / (256 * 4095));
-        shared.scope_audio_scale = pkY.stored_audio;   // Y knob in scope: 0..1024 (256=1×)
+        shared.scope_audio_scale = pkY.stored_audio;   // Y knob in scope: 0..512 (256=1×)
+        shared.scope_baseline    = pkX.stored_baseline; // X knob in scope: baseline row
 
         bool etch = (shared.knob_main < ETCH_THRESH);
         LedOn(0, !etch);               // scope mode
         LedOn(1, etch);                // etch-a-sketch mode (far CCW)
         LedOn(2, shared.pulse_invert); // invert active
         LedOn(3, shared.sw_position == 0); // fade active
-        LedOn(4, shared.sw_position == 2); // wipe-out active (switch DOWN held)
+        LedOn(4, shared.sw_position == 2); // freeze & fade active (switch DOWN held)
     }
 };
 

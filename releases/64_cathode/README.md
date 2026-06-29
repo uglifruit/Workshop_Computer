@@ -97,19 +97,32 @@ Knob X and Y change job with the mode and switch. All changes use **pickup hyste
 
 | Mode | Switch | Knob X | Knob Y |
 |------|--------|--------|--------|
-| **Etch** | UP / MIDDLE | CV In 1 **scale** (0–4×) | CV In 2 **scale** (0–4×) |
-| **Etch** | DOWN (held) | X **offset** (position) | Y **offset** (inverted) |
-| **Scope** | UP / MIDDLE | — | Audio In 1 **gain** (0–2×) |
+| **Etch** | UP | CV In 1 **scale** (0–4×) | CV In 2 **scale** (0–4×) |
+| **Etch** | MIDDLE | X **offset** (position) | Y **offset** (inverted) |
+| **Scope** | UP / MIDDLE | centre-line (0V) **vertical position** | Audio In 1 **gain** (0–2×) |
 
-Etch position = offset + CV × scale. CV is sampled at the full 48 kHz and every sample is drawn (line-interpolated), so fast gestures draw smooth continuous curves. The scale can boost a small CV (or audio) input as well as attenuate it.
+Etch position = offset + CV × scale. CV is sampled at the full 48 kHz and every sample is drawn (line-interpolated), so fast gestures draw smooth continuous curves. Scale can boost a small CV (or audio) input as well as attenuate it. (DOWN is reserved for performance effects — see below — so knobs hold their current job while it is held.)
 
 ### Switch — Background / Performance
 
-| Position | Mode | Behaviour |
-|----------|------|-----------|
-| **UP** | Phosphor fade | Brightness decays to true black. In scope mode the fade is **locked to the sweep** — a column reaches black just as the sweep returns to it, at any speed. In etch mode the fade rate is set by the main knob. |
-| **MIDDLE** | Static | Pixels persist. In scope mode each column is cleared just before redrawing (single clean trace); in etch mode drawings accumulate. |
-| **DOWN** (momentary) | Wipe-out + offset | Held: the whole screen ramps to black over ~0.8 s (a "wipe" gesture you can draw through) **and** Knob X/Y switch to OFFSET mode. |
+| Position | Behaviour |
+|----------|-----------|
+| **UP** | Phosphor fade. In scope mode the fade is **locked to the sweep** — a column reaches black just as the sweep returns to it, at any speed. In etch mode the fade rate is set by the main knob (~0.15–2 s). |
+| **MIDDLE** | Static — pixels persist. In scope mode each column is cleared just before redrawing (single clean trace); in etch mode drawings accumulate. |
+| **DOWN** (momentary) | **Performance effect** (see below). Each new press cycles to the next effect; holding runs the current one. |
+
+### Performance effects (cycle by tapping Switch DOWN)
+
+| # | Effect | Held behaviour |
+|---|--------|----------------|
+| 0 | Strobe | Whole screen flashes (rapid invert); drawing frozen |
+| 1 | Freeze & fade | Freeze, fade to black (~0.3 s) |
+| 2 | Freeze & bloom | Freeze, ramp to full white (~0.3 s) |
+| 3 | Swap / Reverse | Etch: transpose X/Y axes · Scope: reverse sweep direction |
+| 4 | Snow | Whole screen random brightness each frame |
+| 5 | Corrupt | Dramatic glitch — rows shift/tear, noise bands |
+
+The index wraps after Corrupt back to Strobe. (Designed so CV selection can replace the tap-cycle later.)
 
 ---
 
@@ -127,7 +140,7 @@ Etch position = offset + CV × scale. CV is sampled at the full 48 kHz and every
 | LED 1 | Lit in etch-a-sketch mode |
 | LED 2 | Lit while Pulse In 2 (invert) is HIGH |
 | LED 3 | Lit in phosphor fade mode (Switch UP) |
-| LED 4 | Lit while wipe-out / offset active (Switch DOWN held) |
+| LED 4 | Lit while a performance effect is active (Switch DOWN held) |
 | LED 5 | Unused |
 
 ---
@@ -141,7 +154,7 @@ CV In 1 ──┐
 CV In 2 ──┘
 
 Main Knob ──────────────────────────► etch (far CCW) | scope speed slow→fast (CW)
-Switch ─────────────────────────────► UP=fade  MID=static  DOWN=wipe-out + X/Y offset
+Switch ─────────────────────────────► UP=fade  MID=static  DOWN=performance effect (cycles)
 
 Pulse In 1 (rising edge) ───────────► clear framebuffer
 Pulse In 2 (gate HIGH) ─────────────► invert output
@@ -169,7 +182,7 @@ Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu
 
 **Oscilloscope with persistence** — Scope mode + Switch UP. The live sweep leaves a trail that dissolves evenly to black.
 
-**Rhythmic wipe** — Hold Switch DOWN to ramp the screen to black over ~0.8 s while still drawing through it; release to let the image build back up. A hands-on performance gesture.
+**Performance effects** — Tap Switch DOWN to cycle through strobe / freeze-fade / freeze-bloom / swap-reverse / snow / corrupt; hold to run the current one. Great for punctuating a patch live.
 
 **Strobed inversion** — A square LFO or clock into Pulse In 2 flips the image at the LFO rate.
 
