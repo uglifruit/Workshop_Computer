@@ -2,7 +2,7 @@
 
 A PAL composite video synthesizer. Generates a live black-and-white picture on any composite-input TV or monitor, driven entirely by Eurorack control voltages and audio signals. The picture reacts to what you patch in — sweep an audio waveform across the screen as an oscilloscope trace, or draw freely with two CV sources as X/Y coordinates.
 
-The image is 1-bit (black/white) at the pixel level, rendered through a small **2-bit resistor DAC** built from **Pulse Out 1** and **Pulse Out 2** so the signal has proper composite levels (separate sync, black and white). Drawing happens in a half-resolution greyscale working buffer that is **spatially dithered** into the 1-bit picture, giving three apparent shades (black / grey / white) — enough for a smooth CRT-style phosphor fade. No extra hardware is needed beyond two resistors and a phono (RCA) cable.
+The image is 1-bit (black/white) at the pixel level, rendered through a small **2-bit resistor DAC** built from **Pulse Out 1** and **Pulse Out 2** so the signal has proper composite levels (separate sync, black and white). Drawing happens in a half-resolution greyscale working buffer that is **spatially dithered** into the 1-bit picture, giving **5 apparent brightness levels** (black → white) — enough for a smooth CRT-style phosphor fade. No extra hardware is needed beyond two resistors and a phono (RCA) cable.
 
 ---
 
@@ -80,28 +80,33 @@ Both pulse outputs are consumed by the video DAC and are not available as normal
 
 ## Controls
 
-### Main Knob — Mode Select
+### Main Knob — Mode + Speed
+
+The main knob is a continuous control:
 
 | Position | Mode | Behaviour |
 |----------|------|-----------|
-| **CCW (left half)** | Oscilloscope | Audio In 1 sets the trace height. A vertical line is drawn from screen centre to the sampled level, sweeping left→right (about 1.8s per full sweep). |
-| **CW (right half)** | Etch-a-sketch | Knob X/Y set a base cursor position; CV In 1/2 add an offset around it. A 3×3 dot is drawn at every captured CV sample, so fast moves draw continuous lines. |
+| **Lowest ~25% (far CCW)** | Etch-a-sketch | CV In 1/2 draw X/Y. Within this quarter the knob sets the **fade rate** (extreme CCW ≈ 0.15 s to black; top of the quarter ≈ 2 s). |
+| **Upper ~75%** | Oscilloscope | Audio In 1 sets the trace height; the sweep speed scales from **slow (~3 s/sweep)** just above the etch zone to **fast (~0.1 s)** at full CW. |
 
 Mode changes take effect immediately and do not clear the screen.
 
-### Knob X / Knob Y — Etch base position
+### Knob X / Knob Y — dual function (etch)
 
-In etch-a-sketch mode, Knob X and Knob Y set the resting cursor position (X and Y) when no CV is patched. CV In 1/2 then add a bipolar offset around that point. A centred knob with nothing patched draws at the centre of the screen.
+Each knob does two jobs depending on the switch, with **pickup hysteresis** (when the switch changes a knob's job, that parameter holds its value until you physically move the knob past a small threshold — no jumps):
 
-### Switch — Background Mode
+- **Switch UP or MIDDLE → SCALE**: attenuate *or boost* the CV In 1/2 range (0 to 4×; centred ≈ 2×). Useful when the incoming CV is small.
+- **Switch DOWN (held) → OFFSET**: position the drawing on screen. The **Y offset is inverted** in this mode. (Holding DOWN also runs the wipe-out, below.)
 
-Controls what happens to pixels already on screen between frames.
+Etch position = offset + CV × scale. CV is sampled at the full 48 kHz and every sample is drawn (with line interpolation), so fast gestures draw smooth continuous curves.
+
+### Switch — Background / Performance
 
 | Position | Mode | Behaviour |
 |----------|------|-----------|
-| **UP** | Phosphor fade | Each cell's brightness steps down over time (white → grey → black), reaching true black. The greyscale levels make this a smooth-ish CRT-style decay rather than an abrupt clear. ~2.4 s lifetime. |
-| **MIDDLE** | Static | Pixels persist. In scope mode each column is cleared just before redrawing, giving a single clean trace; in etch mode drawings accumulate. |
-| **DOWN** | Snow | Each cell is set to a random brightness (black/grey/white) every frame — a field of greyscale static. Works well combined with the invert gate. |
+| **UP** | Phosphor fade | Brightness decays to true black. In scope mode the fade is **locked to the sweep** — a column reaches black just as the sweep returns to it, at any speed. In etch mode the fade rate is set by the main knob. |
+| **MIDDLE** | Static | Pixels persist. In scope mode each column is cleared just before redrawing (single clean trace); in etch mode drawings accumulate. |
+| **DOWN** (momentary) | Wipe-out + offset | Held: the whole screen ramps to black over ~0.8 s (a "wipe" gesture you can draw through) **and** Knob X/Y switch to OFFSET mode. |
 
 ---
 
@@ -119,7 +124,7 @@ Controls what happens to pixels already on screen between frames.
 | LED 1 | Lit in etch-a-sketch mode |
 | LED 2 | Lit while Pulse In 2 (invert) is HIGH |
 | LED 3 | Lit in phosphor fade mode (Switch UP) |
-| LED 4 | Lit in snow mode (Switch DOWN) |
+| LED 4 | Lit while wipe-out / offset active (Switch DOWN held) |
 | LED 5 | Unused |
 
 ---
@@ -132,8 +137,8 @@ CV In 1 ──┐
           ├─ + Knob X/Y base ────────► X/Y cursor (etch mode, 48kHz sampled)
 CV In 2 ──┘
 
-Main Knob ──────────────────────────► mode select (CCW=scope, CW=etch)
-Switch ─────────────────────────────► background (UP=fade, MID=static, DOWN=snow)
+Main Knob ──────────────────────────► etch (far CCW) | scope speed slow→fast (CW)
+Switch ─────────────────────────────► UP=fade  MID=static  DOWN=wipe-out + X/Y offset
 
 Pulse In 1 (rising edge) ───────────► clear framebuffer
 Pulse In 2 (gate HIGH) ─────────────► invert output
@@ -161,9 +166,9 @@ Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu
 
 **Oscilloscope with persistence** — Scope mode + Switch UP. The live sweep leaves a trail that dissolves evenly to black.
 
-**Self-clearing snowfield** — Switch DOWN with nothing patched, then a rhythmic gate to Pulse In 1 to clear on the beat.
+**Rhythmic wipe** — Hold Switch DOWN to ramp the screen to black over ~0.8 s while still drawing through it; release to let the image build back up. A hands-on performance gesture.
 
-**Strobed inversion** — A square LFO or clock into Pulse In 2 flips the image at the LFO rate. Combine with snow for pulsing static.
+**Strobed inversion** — A square LFO or clock into Pulse In 2 flips the image at the LFO rate.
 
 ---
 
@@ -174,7 +179,8 @@ Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu
 - **2-bit DAC output:** Each pixel is sent as a 2-bit symbol to GPIO 8 (Pu1) and GPIO 9 (Pu2) via PIO `out pins, 2`, summed externally into 3 composite levels (sync / black / white).
 - **Core allocation:** Core 1 is dedicated to video (PIO + DMA) for rock-solid sync; Core 0 runs all Eurorack I/O through ComputerCard at 48 kHz and pushes CV samples to Core 1 via a ring buffer.
 - **Greyscale via dithering:** all drawing happens in a half-resolution grey buffer (180×128, `GREY_SCALE`-configurable) where each cell holds a brightness 0–2. Each frame it is expanded into the 1-bit framebuffer with a 2×2 spatial dither (L0=00/00 black, L1=01/10 checker grey, L2=11/11 white). The scan-out path reads the resulting 1-bit framebuffer unchanged.
-- **Phosphor fade:** each grey cell's brightness is decremented toward 0 every `FADE_EVERY_N` frames, reaching true black — a deterministic decay (no random residue), ~2.4 s lifetime.
+- **Phosphor fade:** grey cells decrement toward true black. In scope mode the fade is locked to the sweep (a column blackens just as the sweep returns); in etch mode the main knob sets the rate (~0.15–2 s).
+- **Greyscale:** 5 levels via a 2×2 spatial dither whose 4 orientations cycle every 2 frames (averages out the pattern). Dilation is **level-aware** — brighter levels are held on longer so the brightness ramp survives the DAC's slow rise (a lone dim pixel isn't flattened to white).
 - **White dilation (analog workaround):** a lone white pixel can't slew to full white through the resistor DAC in one ~143 ns pixel, so it reads grey. After expansion each white pixel is dilated `WHITE_DILATE` pixels to the right, guaranteeing white features are wide enough to render at full brightness. Etch dots are also drawn ≥2 cells wide for the same reason. This trades a little horizontal sharpness for white fidelity — the practical compromise of 1-bit composite.
 - **RAM usage:** ~44% of the RP2040's 256 KB: the two double-buffered PAL word streams (~70 KB), the grey buffer (~23 KB) and the framebuffer (~11 KB).
 - **Pixels are taller than wide** (portrait) given 360 columns over the ~52µs active line and 256 rows; greyscale cells are 2×2 of these.

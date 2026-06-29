@@ -60,7 +60,7 @@
 #define GREY_W       (FB_WIDTH  / GREY_SCALE)   // 180 at scale 2
 #define GREY_H       (FB_HEIGHT / GREY_SCALE)   // 128 at scale 2
 #define GREY_SIZE    (GREY_W * GREY_H)          // 23040 bytes at scale 2
-#define GREY_LEVELS  3                          // 0=black, 1=checker grey, 2=white
+#define GREY_LEVELS  5                          // 0=black .. 4=white (count of lit 2×2 subpx)
 static_assert(FB_WIDTH  % GREY_SCALE == 0, "GREY_SCALE must divide FB_WIDTH");
 static_assert(FB_HEIGHT % GREY_SCALE == 0, "GREY_SCALE must divide FB_HEIGHT");
 
@@ -85,9 +85,9 @@ static_assert(FB_HEIGHT % GREY_SCALE == 0, "GREY_SCALE must divide FB_HEIGHT");
 
 // Frame structure:
 #define PAL_VSYNC_LINES     5
-#define PAL_BLANK_TOP       29                 // +12 lines pushes picture down
+#define PAL_BLANK_TOP       33                 // picture vertical position (down vs default)
 #define PAL_ACTIVE_LINES    FB_HEIGHT          // 256
-#define PAL_BLANK_BOT       22                 // 5+29+256+22 = 312 ✓
+#define PAL_BLANK_BOT       18                 // 5+33+256+18 = 312 ✓
 #define PAL_TOTAL_LINES     312
 
 // ─── DMA word stream ─────────────────────────────────────────────────────────
@@ -107,26 +107,55 @@ static uint8_t grey_buffer[GREY_SIZE];
 
 // ─── Etch CV ring buffer (Core 0 pushes @48kHz, Core 1 drains each frame) ─────
 // Captures sub-frame CV motion: each frame Core 1 plots every sample Core 0 queued.
-// Power-of-two size for cheap masking. 512 samples ≈ 10.7ms of motion at 48kHz.
-#define ETCH_RING_SIZE   512
+// Core 0 produces 48000/50 = 960 samples per frame; the ring MUST hold ≥ that or the
+// overrun guard drops the oldest ~half each frame → sparse points → visible straight
+// lines between them. 2048 (≈42.7ms) covers a full frame with comfortable margin.
+#define ETCH_RING_SIZE   2048
 #define ETCH_RING_MASK   (ETCH_RING_SIZE - 1)
 static volatile int16_t etch_x_ring[ETCH_RING_SIZE];
 static volatile int16_t etch_y_ring[ETCH_RING_SIZE];
 static volatile uint32_t etch_write_idx = 0;  // Core 0 increments after each push
+
+// ─── Audio ring buffer (Core 0 pushes AudioIn1 @48kHz; scope pulls 1/column) ──
+// Lets the scope draw a real waveform at fast sweep: each drawn column reads a fresh
+// audio sample instead of reusing one per frame (which made bars fat at speed).
+#define AUDIO_RING_SIZE  1024     // ≈21ms @48kHz — covers a full frame's worth + margin
+#define AUDIO_RING_MASK  (AUDIO_RING_SIZE - 1)
+static volatile int16_t  audio_ring[AUDIO_RING_SIZE];
+static volatile uint32_t audio_write_idx = 0;
 
 // ─── Shared state (Core 0 ISR → Core 1 video loop) ───────────────────────────
 struct SharedState {
     volatile int32_t  audio_y;       // AudioIn1() raw: -2048..2047
     volatile int32_t  cv_x;          // CVIn1()   raw: -2048..2047
     volatile int32_t  cv_y;          // CVIn2()   raw: -2048..2047
-    volatile int32_t  knob_x_scale;  // KnobVal(X): 0..4095
-    volatile int32_t  knob_y_scale;  // KnobVal(Y): 0..4095
-    volatile uint8_t  mode;          // 0=oscilloscope, 1=etch-a-sketch
+    // Etch X/Y mapping, resolved on Core 0 (pickup hysteresis) → consumed by Core 1.
+    // pos = offset + (cv * cvgain) >> 12.  offset in grey coords; cvgain is 12.12 fixed.
+    volatile int32_t  etch_offset_x; // 0..GREY_W-1 base position
+    volatile int32_t  etch_offset_y; // 0..GREY_H-1
+    volatile int32_t  etch_cvgain_x; // CV→grey gain (>>12): scale·(GREY_W-1)·4096/(256·4095)
+    volatile int32_t  etch_cvgain_y; // (>>12): scale·(GREY_H-1)·4096/(256·4095)
+    volatile int32_t  knob_main;     // KnobVal(Main): 0..4095 (far-CCW=etch, else scope speed)
     volatile bool     pulse_clear;   // set on Pulse In 1 rising edge
     volatile bool     pulse_invert;  // true while Pulse In 2 is HIGH
-    volatile uint8_t  sw_position;   // 0=UP(fade) 1=MID(static) 2=DOWN(snow)
+    volatile uint8_t  sw_position;   // 0=UP(fade) 1=MID(static) 2=DOWN(wipe + X/Y=offset)
 };
 static SharedState shared;
+
+// ─── Dual-function knob pickup (Core 0) ───────────────────────────────────────
+// Each X/Y knob controls SCALE (switch UP/MIDDLE) or OFFSET (switch DOWN). When the
+// switch flips which param a knob drives, the param holds its stored value until the
+// knob is physically moved past PICKUP_THRESH ("pickup"), preventing a jump.
+#define PICKUP_THRESH   64       // raw knob movement (of 4095) needed to grab control
+#define PICK_SCALE      0
+#define PICK_OFFSET     1
+struct KnobPick {
+    int32_t stored_offset;       // grey coords
+    int32_t stored_scale;        // 0..256 (8.8 of 1.0)
+    uint8_t bound;               // PICK_SCALE or PICK_OFFSET (current destination)
+    int32_t bind_raw;            // raw knob value captured at last bind change
+    bool    captured;            // false until knob moves past threshold after a switch
+};
 
 // ─── DMA channel ─────────────────────────────────────────────────────────────
 static int dma_chan = -1;
@@ -277,29 +306,52 @@ static void build_frame_words(int back, bool invert) {
 // Called by Core 1 during vblank. Reads from shared, writes to frame_buffer[].
 // ─────────────────────────────────────────────────────────────────────────────
 
-static int scope_x = 0;          // oscilloscope sweep X counter (grey-X, Core 1 private)
+// ─── Oscilloscope sweep (knob-controlled speed, fixed-point accumulator) ──────
+// scope_x is the integer sweep column. scope_acc accumulates fractional columns each
+// frame (8.8 fixed point) so slow speeds (<1 col/frame) and fast (>1) both work.
+static int scope_x = 0;            // current sweep column (grey-X, Core 1 private)
+static uint32_t scope_acc = 0;     // fractional column accumulator (8.8 fixed)
+static uint32_t audio_read_idx = 0; // Core 1's drain position in the audio ring
+// Sweep speed range (cols/frame, 8.8 fixed). 180 cols, 50 fps:
+//   fast = 180/(0.1*50)=36 cols/frame; slow = 180/(3.0*50)=1.2 cols/frame.
+#define SCOPE_STEP_SLOW   (307u)   //  1.2 cols/frame × 256 ≈ 307  (~3.0s/sweep)
+#define SCOPE_STEP_FAST   (9216u)  // 36.0 cols/frame × 256 = 9216 (~0.1s/sweep)
+// Main knob: lowest 25% (0..1023) = etch (knob sets fade rate); upper 75% = scope speed.
+#define ETCH_THRESH       1024     // knob_main below this = etch (CV1 vs CV2) mode
+
+// ─── Phosphor fade ───────────────────────────────────────────────────────────
+// Scope fade is LOCKED to the sweep: one global level-decrement each time the sweep
+// has advanced GREY_W/(GREY_LEVELS-1) columns. Over a full pass the sweep advances
+// GREY_W cols = (GREY_LEVELS-1) decrements = level (max)→0, so a freshly-drawn column
+// reaches true black just as the sweep wraps back to it, at ANY speed. (fade_cols
+// accumulates columns advanced since the last decrement.)
+static uint32_t fade_cols = 0;     // scope: columns since last decrement; etch: frames
+// Etch fade rate is set by the knob across the etch quarter: knob 0 → fastest (0.15s
+// to black), knob (ETCH_THRESH-1) → slowest (2.0s). 5 levels = 4 decrements:
+//   0.15s = 7.5 frames → decrement every ~2 frames; 2.0s = 100 frames → every ~25.
+#define ETCH_FADE_FAST    2        // frames/decrement at knob 0    (~0.15s to black)
+#define ETCH_FADE_SLOW    25       // frames/decrement at knob max  (~2.0s to black)
 static uint32_t etch_read_idx = 0; // Core 1's drain position in the etch CV ring
 static int etch_prev_x = 0, etch_prev_y = 0; // last etch point (for line interpolation)
 static bool etch_have_prev = false;          // false until first etch sample drawn
 #define ETCH_DEADBAND 1   // grey-cell jitter band: ignore moves within ±this of anchor
 
-// ─── Phosphor fade (switch UP) ───────────────────────────────────────────────
-// Each grey cell's brightness is decremented toward 0 (true black). With 3 levels
-// this is only 2 visible steps, so apply it every FADE_EVERY_N frames to stretch
-// the lifetime. lifetime ≈ (GREY_LEVELS-1) × FADE_EVERY_N × 20ms.
-//   FADE_EVERY_N = 60 → 2 × 60 × 20ms = 2.4s
-#define FADE_EVERY_N 60
-static uint32_t fade_div = 0;    // frame counter for the fade divider
-
-// ─── 2×2 dither patterns (GREY_SCALE=2) ──────────────────────────────────────
-// Per grey level, the GREY_SCALE-wide bit field for each sub-row (MSB=left).
-//   L0 = 00/00 (black)   L1 = 01/10 (checker grey)   L2 = 11/11 (white)
-// dither[level][sub_row] — only the GREY_SCALE low bits are used.
-static const uint8_t dither[GREY_LEVELS][2] = {
-    /*L0*/ {0b00, 0b00},
-    /*L1*/ {0b01, 0b10},
-    /*L2*/ {0b11, 0b11},
+// ─── 2×2 dither patterns: 5 levels × 4 orientations (GREY_SCALE=2) ────────────
+// dither[level][orientation][sub_row]; each value = 2-bit field (bit1=left,bit0=right).
+// level = number of lit subpixels (0..4). 4 orientations per level are cycled every 2
+// frames so the dither rotates and averages out spatially over time (smoother greys,
+// less fixed checkerboard). L0 and L4 are identical across orientations; L1/L2/L3 differ.
+// Cell layout per entry: {top_row, bottom_row}.
+static const uint8_t dither[GREY_LEVELS][4][2] = {
+    /*L0 0/4*/ {{0b00,0b00},{0b00,0b00},{0b00,0b00},{0b00,0b00}},
+    /*L1 1/4*/ {{0b10,0b00},{0b01,0b00},{0b00,0b01},{0b00,0b10}}, // single px in TL,TR,BR,BL
+    /*L2 2/4*/ {{0b10,0b01},{0b01,0b10},{0b11,0b00},{0b00,0b11}}, // diag\, diag/, top, bottom
+    /*L3 3/4*/ {{0b11,0b10},{0b11,0b01},{0b01,0b11},{0b10,0b11}}, // one corner off
+    /*L4 4/4*/ {{0b11,0b11},{0b11,0b11},{0b11,0b11},{0b11,0b11}},
 };
+
+// Dither orientation index, advanced every 2 frames by Core 1 (see core1_main loop).
+static int dither_orient = 0;
 
 // Right-dilate white by WHITE_DILATE pixels: every white pixel also forces the next
 // WHITE_DILATE pixels to its RIGHT white. Exploits the composite DAC's rising-edge
@@ -309,19 +361,34 @@ static const uint8_t dither[GREY_LEVELS][2] = {
 // (right shift). We track a rolling history of the last 8 emitted bits so the dilate
 // crosses byte boundaries for any N up to 7.
 #define WHITE_DILATE 4   // measured on hardware: an isolated white px needs ~5px (1+4) to reach true white
-static inline void dilate_white_right(uint8_t *fb) {
-    // 'spill' holds the WHITE_DILATE rightmost source bits of the previous byte,
-    // left-aligned into the top bits, ready to flow into this byte's MSBs.
-    uint16_t prev = 0;   // previous source byte (for cross-byte carry)
-    for (int b = 0; b < FB_STRIDE; b++) {
-        uint8_t v = fb[b];
-        // Build a 16-bit window: [prev_byte][this_byte], MSB-first. OR in right-shifts
-        // 1..N of the window, then take this byte's 8 bits.
-        uint16_t win = (uint16_t)((prev << 8) | v);
-        uint16_t out = win;
-        for (int s = 1; s <= WHITE_DILATE; s++) out |= (win >> s);
-        fb[b] = (uint8_t)(out & 0xFF);
-        prev = v;
+
+// Per-level rightward dilation in PIXELS, indexed by grey level 0..4. Higher levels
+// are held on longer (→ brighter); low/fading levels get little/no dilation so dim
+// pixels actually look dim. This makes dilation LEVEL-AWARE so it no longer flattens
+// the greyscale (a lone L1 sub-pixel previously got the full 4px hold = looked white).
+//   L0=black(0)  L1=1  L2=2  L3=3  L4=full white(4=WHITE_DILATE)
+static const uint8_t dilate_amount[GREY_LEVELS] = { 0, 1, 2, 3, WHITE_DILATE };
+
+// Level-aware right-dilation: for each grey cell, extend its lit sub-pixels rightward
+// by dilate_amount[level] pixels. Seeds from a SNAPSHOT of the row's original lit bits
+// (not its own writes) so chained low-level cells don't over-extend. `grow` = grey row.
+static inline void dilate_white_leveled(uint8_t *fb, const uint8_t *grow) {
+    uint8_t src[FB_STRIDE];
+    for (int b = 0; b < FB_STRIDE; b++) src[b] = fb[b];   // snapshot original lit bits
+    for (int gx = 0; gx < GREY_W; gx++) {
+        int amt = dilate_amount[grow[gx]];
+        if (amt == 0) continue;
+        int base_p = gx * GREY_SCALE;
+        for (int sx = 0; sx < GREY_SCALE; sx++) {
+            int p = base_p + sx;
+            // seed only if this pixel was lit by the dither (read snapshot, not fb)
+            if (src[p >> 3] & (0x80u >> (p & 7))) {
+                for (int d = 1; d <= amt; d++) {
+                    int pp = p + d;
+                    if (pp < FB_WIDTH) fb[pp >> 3] |= (0x80u >> (pp & 7));
+                }
+            }
+        }
     }
 }
 
@@ -339,12 +406,12 @@ static void __not_in_flash_func(expand_grey_to_fb)() {
             for (int b = 0; b < FB_STRIDE; b++) {
                 uint8_t byte = 0;
                 for (int k = 0; k < cells_per_byte; k++) {
-                    byte = (uint8_t)((byte << GREY_SCALE) | dither[grow[cell++]][sub]);
+                    byte = (uint8_t)((byte << GREY_SCALE) | dither[grow[cell++]][dither_orient][sub]);
                 }
                 fb[b] = byte;
             }
 #if WHITE_DILATE
-            dilate_white_right(fb);
+            dilate_white_leveled(fb, grow);
 #endif
         }
     }
@@ -407,72 +474,101 @@ static inline int32_t map_knob_offset_cv(int32_t cv, int32_t knob, int32_t max_o
     return base + offset;
 }
 
+// Decrement every grey cell toward black (one phosphor-fade step).
+static inline void fade_step() {
+    for (int i = 0; i < GREY_SIZE; i++) if (grey_buffer[i]) grey_buffer[i]--;
+}
+
 static void __not_in_flash_func(update_framebuffer)() {
     // Snapshot volatile shared state once. (CV is read per-sample from the etch
     // ring below, not from this snapshot.)
-    uint8_t  mode    = shared.mode;
-    int32_t  audio_y = shared.audio_y;
-    int32_t  kx      = shared.knob_x_scale;
-    int32_t  ky      = shared.knob_y_scale;
+    int32_t  knob    = shared.knob_main;
+    int32_t  ox      = shared.etch_offset_x;   // resolved etch X/Y mapping (Core 0 pickup)
+    int32_t  oy      = shared.etch_offset_y;
+    int32_t  gxn     = shared.etch_cvgain_x;
+    int32_t  gyn     = shared.etch_cvgain_y;
     uint8_t  sw      = shared.sw_position;
+    bool     etch    = (knob < ETCH_THRESH);   // far-CCW = etch (CV1 vs CV2)
 
     // Pulse In 1: clear grey buffer (atomic read-clear)
     if (shared.pulse_clear) {
         shared.pulse_clear = false;
         memset(grey_buffer, 0, GREY_SIZE);
-        scope_x = 0;
+        scope_x = 0; scope_acc = 0; fade_cols = 0;
         etch_have_prev = false;   // don't connect a line across the clear
     }
 
-    // Switch: apply background effect (in grey domain) before drawing
-    switch (sw) {
-        case 0: // UP — phosphor fade: decrement each grey cell toward black, every
-                // FADE_EVERY_N frames. Guaranteed true black; tunable lifetime.
-            if (++fade_div >= FADE_EVERY_N) {
-                fade_div = 0;
-                for (int i = 0; i < GREY_SIZE; i++) {
-                    if (grey_buffer[i]) grey_buffer[i]--;
-                }
-            }
-            break;
-        case 1: // MIDDLE — static, no modification
-            break;
-        case 2: // DOWN — snow: write a random grey level into every cell
-            for (int i = 0; i < GREY_SIZE; i++) {
-                grey_buffer[i] = (uint8_t)(lcg_rand() % GREY_LEVELS);
-            }
-            break;
+    // Switch DOWN (momentary) = WIPE-OUT performance gesture: rapidly ramp the whole
+    // screen to black over ~0.8s while held (decrement every WIPE_EVERY frames). New
+    // drawing still happens on top, so you can "draw through" a wipe. Applies in both
+    // modes and overrides the normal per-mode fade timing below.
+    bool wiping = (sw == 2);
+    if (wiping) {
+        // 0.8s to clear a full (level-4) cell = 4 decrements / 40 frames → every 10.
+        #define WIPE_EVERY 10
+        if (++fade_cols >= WIPE_EVERY) { fade_cols = 0; fade_step(); }
     }
 
-    // Draw based on mode (all in grey-cell coordinates)
-    if (mode == 0) {
+    if (!etch) {
         etch_have_prev = false;   // in scope mode: next etch sample starts fresh
-        // Oscilloscope: sweep a fixed-width bar/frame, drawn from mid-row to the
-        // sampled audio level at white (L2). Bars are SCOPE_BAR_W grey cells wide so
-        // each white feature is wide enough for the DAC to charge to FULL white —
-        // a 1-cell (2px) bar can't rise to white through the resistor network in
-        // ~285ns, so it reads grey. SCOPE_BAR_W=2 → 4px bars charge fully.
-        #define SCOPE_BAR_W 2
+
+        // Sweep speed from knob: lerp SCOPE_STEP_SLOW..FAST across knob[ETCH_THRESH..4095].
+        // 8.8 fixed-point cols/frame.
+        int32_t kspan = 4095 - ETCH_THRESH;
+        int32_t kpos  = knob - ETCH_THRESH; if (kpos < 0) kpos = 0; if (kpos > kspan) kpos = kspan;
+        uint32_t step = SCOPE_STEP_SLOW +
+            (uint32_t)((int64_t)(SCOPE_STEP_FAST - SCOPE_STEP_SLOW) * kpos / kspan);
+
         const int mid = (GREY_H - 1) / 2;
-        int gpy = map_adc(audio_y, GREY_H - 1);
-        gpy = clamp(gpy, 0, GREY_H - 1);
-        int lo = gpy < mid ? gpy : mid;
-        int hi = gpy < mid ? mid : gpy;
-        for (int n = 0; n < SCOPE_BAR_W; n++) {
+
+        // Advance the sweep by `step` (8.8). For each whole column crossed, pull a
+        // FRESH audio sample (so fast sweeps draw a real waveform, not one fat bar/
+        // frame), draw the bar there, and drive the sweep-locked fade.
+        const uint32_t FADE_EVERY_COLS = GREY_W / (GREY_LEVELS - 1);  // 180/4 = 45
+        uint32_t aw = audio_write_idx;                 // snapshot Core 0 write head
+        // How many fresh audio samples are available to consume this frame.
+        uint32_t avail = aw - audio_read_idx;
+        if (avail > AUDIO_RING_SIZE) {                 // overran: keep only the newest
+            audio_read_idx = aw - AUDIO_RING_SIZE;
+            avail = AUDIO_RING_SIZE;
+        }
+        // Count whole columns we'll draw this frame, to spread audio samples across them.
+        scope_acc += step;
+        uint32_t cols_this_frame = scope_acc >> 8;
+        uint32_t consumed = 0;
+        while (scope_acc >= 256) {
+            scope_acc -= 256;
             int gx = scope_x;
             scope_x = (scope_x + 1) % GREY_W;
 
-            // Static (sw==1): clear the grey column for a single clean trace.
-            // Fade (sw==0) leaves the trail to the fade; snow leaves noise.
-            if (sw == 1) {
-                for (int gy = 0; gy < GREY_H; gy++) {
-                    GREY_SET(grey_buffer, gy, gx, 0);
-                }
+            // Pick this column's audio sample. If we have at least as many fresh
+            // samples as columns, step through them evenly; else take the latest.
+            int16_t a;
+            if (avail >= cols_this_frame && cols_this_frame > 0) {
+                // even decimation: map column index → sample index across the frame
+                uint32_t si = audio_read_idx + (consumed * avail / cols_this_frame);
+                a = audio_ring[si & AUDIO_RING_MASK];
+            } else {
+                a = audio_ring[(aw - 1) & AUDIO_RING_MASK];  // latest sample
             }
-            for (int gy = lo; gy <= hi; gy++) {
+            consumed++;
+
+            int gpy = map_adc(a, GREY_H - 1);
+            gpy = clamp(gpy, 0, GREY_H - 1);
+            int lo = gpy < mid ? gpy : mid;
+            int hi = gpy < mid ? mid : gpy;
+
+            if (sw == 1) {  // MIDDLE — static: clear column for a single clean trace
+                for (int gy = 0; gy < GREY_H; gy++) GREY_SET(grey_buffer, gy, gx, 0);
+            }
+            for (int gy = lo; gy <= hi; gy++)
                 GREY_SET(grey_buffer, gy, gx, GREY_LEVELS - 1);
+
+            if (sw == 0) {  // UP — fade locked to sweep
+                if (++fade_cols >= FADE_EVERY_COLS) { fade_cols = 0; fade_step(); }
             }
         }
+        audio_read_idx = aw;   // consumed up to the snapshot head
     } else {
         // Etch-a-sketch: drain every CV sample Core 0 queued and plot at white (L2).
         uint32_t w = etch_write_idx;        // snapshot Core 0's write head
@@ -484,8 +580,9 @@ static void __not_in_flash_func(update_framebuffer)() {
             uint32_t slot = etch_read_idx & ETCH_RING_MASK;
             int32_t rx = etch_x_ring[slot];
             int32_t ry = etch_y_ring[slot];
-            int gx = (int)map_knob_offset_cv(rx, kx, GREY_W - 1);
-            int gy = (int)map_knob_offset_cv(ry, ky, GREY_H - 1);
+            // pos = offset + (cv * cvgain) >> 12.  offset & cvgain resolved on Core 0.
+            int gx = ox + (int)((rx * gxn) >> 12);
+            int gy = oy + (int)((ry * gyn) >> 12);
             gx = clamp(gx, 0, GREY_W - 1);
             gy = clamp(gy, 0, GREY_H - 1);
             etch_read_idx++;
@@ -506,6 +603,14 @@ static void __not_in_flash_func(update_framebuffer)() {
             etch_prev_x = gx;
             etch_prev_y = gy;
             etch_have_prev = true;
+        }
+        // Etch fade (switch UP): rate from knob across the etch quarter — knob 0 =
+        // fastest (~0.25s), knob (ETCH_THRESH-1) = slowest (~3s).
+        if (sw == 0) {
+            int32_t kp = knob; if (kp < 0) kp = 0; if (kp >= ETCH_THRESH) kp = ETCH_THRESH - 1;
+            uint32_t interval = ETCH_FADE_FAST +
+                (uint32_t)((ETCH_FADE_SLOW - ETCH_FADE_FAST) * kp / (ETCH_THRESH - 1));
+            if (++fade_cols >= interval) { fade_cols = 0; fade_step(); }
         }
     }
 
@@ -602,6 +707,12 @@ static void __not_in_flash_func(core1_main)() {
         }
         vblank_ready = false;
 
+        // Advance the dither orientation every 2 frames (rotates the 2×2 patterns so
+        // greys average out over time → smoother, less fixed checkerboard).
+        static uint32_t frame_counter = 0;
+        frame_counter++;
+        dither_orient = (frame_counter >> 1) & 3;
+
         // Update framebuffer with new Eurorack I/O state
         update_framebuffer();
 
@@ -639,14 +750,12 @@ public:
     }
 
     void __not_in_flash_func(ProcessSample)() override {
-        // Mode: main knob ≥ mid selects etch-a-sketch, below = oscilloscope
-        shared.mode = (KnobVal(Knob::Main) >= 2048) ? 1 : 0;
+        // Main knob: far-CCW = etch (CV1 vs CV2); rest = scope, slow→fast CW.
+        shared.knob_main = KnobVal(Knob::Main);
 
         shared.audio_y      = AudioIn1();
         shared.cv_x         = CVIn1();
         shared.cv_y         = CVIn2();
-        shared.knob_x_scale = KnobVal(Knob::X);
-        shared.knob_y_scale = KnobVal(Knob::Y);
 
         // Push this CV sample into the etch ring so Core 1 can plot every sample.
         // Write the data BEFORE advancing the index so Core 1 never reads a half-
@@ -655,6 +764,11 @@ public:
         etch_x_ring[w & ETCH_RING_MASK] = (int16_t)shared.cv_x;
         etch_y_ring[w & ETCH_RING_MASK] = (int16_t)shared.cv_y;
         etch_write_idx = w + 1;
+
+        // Push the audio sample into the audio ring (for the scope waveform).
+        uint32_t aw = audio_write_idx;
+        audio_ring[aw & AUDIO_RING_MASK] = (int16_t)shared.audio_y;
+        audio_write_idx = aw + 1;
 
         if (PulseIn1RisingEdge()) {
             shared.pulse_clear = true;
@@ -667,11 +781,62 @@ public:
         else if (sw == Switch::Middle) shared.sw_position = 1;
         else                           shared.sw_position = 2;
 
-        LedOn(0, shared.mode == 0);    // oscilloscope mode
-        LedOn(1, shared.mode == 1);    // etch-a-sketch mode
+        // ── Dual-function X/Y knob pickup ──────────────────────────────────────
+        // DOWN → knobs edit OFFSET; UP/MIDDLE → knobs edit SCALE. Boot holdoff: the
+        // switch reads Down before the ADC settles (CLAUDE.md), so don't run pickup
+        // until settled, or a spurious boot-DOWN freezes both knobs uncaptured.
+        static uint32_t boot_ctr = 0;
+        static KnobPick pkX, pkY;
+        static bool pick_init = false;
+        if (!pick_init) {   // sensible defaults: centred offset, full-range scale
+            pkX = { (GREY_W-1)/2, 256, PICK_SCALE, 0, true };
+            pkY = { (GREY_H-1)/2, 256, PICK_SCALE, 0, true };
+            pick_init = true;
+        }
+        uint8_t desired = (shared.sw_position == 2) ? PICK_OFFSET : PICK_SCALE;
+
+        auto run_pick = [&](KnobPick &p, int32_t raw, int32_t maxpos, bool invert_offset) {
+            if (desired != p.bound) {          // switch changed this knob's destination
+                p.bound = desired;
+                p.bind_raw = raw;              // remember physical position now
+                p.captured = false;           // hold stored value until knob moves
+            }
+            if (!p.captured) {
+                int32_t d = raw - p.bind_raw; if (d < 0) d = -d;
+                if (d >= PICKUP_THRESH) p.captured = true;
+            }
+            if (p.captured) {
+                if (p.bound == PICK_OFFSET) {
+                    int32_t off = (raw * maxpos) / 4095;
+                    p.stored_offset = invert_offset ? (maxpos - off) : off;  // Y flips
+                }
+                // SCALE: 0..1024 where 256 = unity (1×). So the knob can ATTENUATE
+                // (below ~1/4 travel) AND BOOST up to 4× — useful when CV In is small.
+                else p.stored_scale = (raw * 1024) / 4095;
+            }
+        };
+
+        if (boot_ctr < 4800) {
+            boot_ctr++;
+        } else {
+            run_pick(pkX, KnobVal(Knob::X), GREY_W - 1, false);
+            run_pick(pkY, KnobVal(Knob::Y), GREY_H - 1, true);  // Y offset inverted (DOWN)
+        }
+
+        // Publish resolved etch mapping. cvgain is 12.12 fixed: Core 1 does
+        // pos = offset + (cv * cvgain) >> 12, giving cv·(scale/256)·maxpos/4095.
+        // scale: 256 = 1× (full CV swing → ≈±89 cells); up to 1024 = 4× boost.
+        shared.etch_offset_x = pkX.stored_offset;
+        shared.etch_offset_y = pkY.stored_offset;
+        shared.etch_cvgain_x = (int32_t)((int64_t)pkX.stored_scale * (GREY_W - 1) * 4096 / (256 * 4095));
+        shared.etch_cvgain_y = (int32_t)((int64_t)pkY.stored_scale * (GREY_H - 1) * 4096 / (256 * 4095));
+
+        bool etch = (shared.knob_main < ETCH_THRESH);
+        LedOn(0, !etch);               // scope mode
+        LedOn(1, etch);                // etch-a-sketch mode (far CCW)
         LedOn(2, shared.pulse_invert); // invert active
         LedOn(3, shared.sw_position == 0); // fade active
-        LedOn(4, shared.sw_position == 2); // snow active
+        LedOn(4, shared.sw_position == 2); // wipe-out active (switch DOWN held)
     }
 };
 
