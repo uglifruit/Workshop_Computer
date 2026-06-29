@@ -308,7 +308,7 @@ static const uint8_t dither[GREY_LEVELS][2] = {
 // scan order → renders full white. MSB = leftmost pixel, so "right" = toward the LSB
 // (right shift). We track a rolling history of the last 8 emitted bits so the dilate
 // crosses byte boundaries for any N up to 7.
-#define WHITE_DILATE 2
+#define WHITE_DILATE 4   // measured on hardware: an isolated white px needs ~5px (1+4) to reach true white
 static inline void dilate_white_right(uint8_t *fb) {
     // 'spill' holds the WHITE_DILATE rightmost source bits of the previous byte,
     // left-aligned into the top bits, ready to flow into this byte's MSBs.
