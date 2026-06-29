@@ -63,7 +63,7 @@ The signal is **PAL** (50Hz). Displays locked to NTSC-only will not show it; mos
 | CV In 1 | Etch-a-sketch X (etch mode). Scaled/offset by Knob X. Sampled at full 48 kHz. |
 | CV In 2 | Etch-a-sketch Y (etch mode). Scaled/offset by Knob Y. Sampled at full 48 kHz. |
 | Pulse In 1 | **Clear** — any rising edge instantly clears the screen to black. |
-| Pulse In 2 | **Invert** — while held HIGH, the video output is inverted (white ↔ black). |
+| Pulse In 2 | **Trigger source** — runs the behaviour assigned in the config menu (default: INVERT while held). |
 
 ---
 
@@ -109,20 +109,26 @@ Etch position = offset + CV × scale. CV is sampled at the full 48 kHz and every
 |----------|-----------|
 | **UP** | Phosphor fade. In scope mode the fade is **locked to the sweep** — a column reaches black just as the sweep returns to it, at any speed. In etch mode the fade rate is set by the main knob (~0.15–2 s). |
 | **MIDDLE** | Static — pixels persist. In scope mode each column is cleared just before redrawing (single clean trace); in etch mode drawings accumulate. |
-| **DOWN** (momentary) | **Performance effect** (see below). Each new press cycles to the next effect; holding runs the current one. |
+| **DOWN** (momentary) | **Trigger source** — runs the behaviour assigned to it in the config menu (default: cycle through the performance effects). Hold to run it. |
 
-### Performance effects (cycle by tapping Switch DOWN)
+### Trigger behaviours (assignable to Switch-DOWN and Pulse In 2)
 
-| # | Effect | Held behaviour |
-|---|--------|----------------|
-| 0 | Strobe | Whole screen flashes (rapid invert); drawing frozen |
-| 1 | Freeze & fade | Freeze, fade to black (~0.3 s) |
-| 2 | Freeze & bloom | Freeze, ramp to full white (~0.3 s) |
-| 3 | Swap / Reverse | Etch: transpose X/Y axes · Scope: reverse sweep direction |
-| 4 | Snow | Whole screen random brightness each frame |
-| 5 | Corrupt | Dramatic glitch — rows shift/tear, noise bands |
+Both Switch-DOWN and Pulse In 2 are trigger sources; each is assigned one behaviour in the config menu. Defaults: **Switch-DOWN = CYCLE FX**, **Pulse In 2 = INVERT** (reproducing the original firmware).
 
-The index wraps after Corrupt back to Strobe. (Designed so CV selection can replace the tap-cycle later.)
+| Behaviour | While triggered |
+|-----------|-----------------|
+| INVERT | Whole image inverted |
+| CLS | Clear the screen (on each trigger) |
+| CYCLE FX | Advance to the next performance effect on each new trigger; run it while held |
+| RANDOM FX | Pick a random effect on each trigger |
+| CV FX | Audio In 2 level selects which effect |
+| STROBE / FADE / FADEWHITE / SNOW / SWAP / CORRUPT | Run that one fixed effect while held |
+
+The six performance effects: **Strobe** (rapid flash), **Fade** (freeze + fade to black), **Fade-white** (freeze + bloom to white), **Swap** (etch: transpose X/Y · scope: reverse sweep), **Snow** (random static), **Corrupt** (rows shift/tear + noise).
+
+### Config menu
+
+While holding **Switch DOWN**, **twist Knob X or Y** to open the config menu (the effect stops and a text menu appears). **Knob X** selects the Switch-DOWN behaviour, **Knob Y** selects the Pulse In 2 behaviour. Release DOWN to exit; settings are kept (until power-off). The knob you twisted to enter only takes control of its setting once you move it a little further — so it won't jump.
 
 ---
 
@@ -138,9 +144,9 @@ The index wraps after Corrupt back to Strobe. (Designed so CV selection can repl
 |-----|----------|
 | LED 0 | Lit in oscilloscope mode |
 | LED 1 | Lit in etch-a-sketch mode |
-| LED 2 | Lit while Pulse In 2 (invert) is HIGH |
+| LED 2 | Lit while the config menu is open |
 | LED 3 | Lit in phosphor fade mode (Switch UP) |
-| LED 4 | Lit while a performance effect is active (Switch DOWN held) |
+| LED 4 | Lit while Switch DOWN is held (effect / menu) |
 | LED 5 | Unused |
 
 ---
@@ -157,7 +163,7 @@ Main Knob ───────────────────────�
 Switch ─────────────────────────────► UP=fade  MID=static  DOWN=performance effect (cycles)
 
 Pulse In 1 (rising edge) ───────────► clear framebuffer
-Pulse In 2 (gate HIGH) ─────────────► invert output
+Pulse In 2 (gate) ──────────────────► configurable trigger (default: invert)
 
 Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu2 ─► [resistor DAC] ─► TV
 ```
@@ -171,8 +177,11 @@ Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu
 3. Set the Switch to **MIDDLE** (static).
 4. Turn the Main Knob to the **upper range** (oscilloscope) and patch any audio into **Audio In 1** — you'll see the waveform sweep across. Knob position sets sweep speed; Knob Y sets the trace gain.
 5. Try Switch **UP** (phosphor fade) for a glowing persistence trail that dissolves to black.
-6. Turn the Main Knob fully **CCW** (etch-a-sketch). Patch LFOs/CV into **CV In 1** and **CV In 2** — two slightly-detuned sine LFOs draw evolving Lissajous figures. Knob X/Y scale them; hold Switch DOWN to reposition (offset).
-7. Send a gate into **Pulse In 1** to clear, or into **Pulse In 2** to strobe-invert.
+6. Turn the Main Knob fully **CCW** (etch-a-sketch). Patch LFOs/CV into **CV In 1** and **CV In 2** — two slightly-detuned sine LFOs draw evolving Lissajous figures. Switch **UP** = Knob X/Y scale the CV; Switch **MIDDLE** = Knob X/Y reposition (offset).
+7. Hold **Switch DOWN** for the performance effect; tap it repeatedly to cycle effects. While holding DOWN, twist Knob X or Y to open the **config menu**.
+8. Send a gate into **Pulse In 1** to clear.
+
+**Alt boot:** hold Switch DOWN while powering on to start in screensaver mode (placeholder).
 
 ---
 
