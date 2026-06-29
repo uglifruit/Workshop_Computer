@@ -14,10 +14,10 @@
 // 4 summed levels (3 used): sync 0V / black ~0.3V / white ~1.0V. Pulse Out 2 is
 // now consumed by video — it is no longer a usable normal pulse output.
 //
-// PAL timing (144 MHz sys clock, SM @ 144/20.571 = 7.000 MHz):
-//   1 pixel = 1 SM cycle = 20.571 sys-cycles = 142.857 ns
-//   Line:    448 pixels = 64.000 µs  (target 64.000 µs, 0%)
-//   Frame:   312 lines  = 19.968 ms  (target 20.000 ms = 50 Hz, -0.16%)
+// PAL timing (111 MHz sys clock, SM @ 111/16 = 6.93750 MHz = teletext bit rate exact):
+//   1 pixel = 1 SM cycle = 16 sys-cycles = 144.144 ns (1 teletext bit = 1 pixel)
+//   Integer clkdiv = no jitter (essential for a teletext decoder to lock).
+//   Line:    444 pixels = 64.000 µs.  Interlaced: 625 lines/frame, 50 fields/s.
 
 #include "ComputerCard.h"
 #include "pico/multicore.h"
@@ -27,6 +27,14 @@
 #include "hardware/sync.h"
 #include "composite.pio.h"
 #include <cstring>
+#include "ttx_page.h"     // generated teletext page data (tools/tti2h.py)
+
+// ─── TEST MODE ────────────────────────────────────────────────────────────────
+// 1 = static hardware test-pattern rig (four quadrants of geometric patterns,
+//     Main knob tunes "on" pulse width) to characterise the DAC's analog edge
+//     behaviour. Bypasses all picture/teletext/input code and dither/dilation.
+// 0 = normal Cathode Ray firmware.
+#define TEST_PATTERN        0
 
 // ─── Hardware pin macros ──────────────────────────────────────────────────────
 #define VIDEO_GPIO          8       // PULSE_1_RAW_OUT — video DAC bit 0 (Pu1).
@@ -66,34 +74,69 @@ static_assert(FB_HEIGHT % GREY_SCALE == 0, "GREY_SCALE must divide FB_HEIGHT");
 
 #define GREY_SET(buf, r, c, lvl) ((buf)[(r)*GREY_W + (c)] = (uint8_t)(lvl))
 
-// ─── PAL line timing (7.000MHz clock, 142.857ns/tick, divider=144/7) ─────────
-// Line = 64µs = 448 ticks. Segments must sum to exactly 448.
-//   fp=12 + hs=33 + bp=40 + av=363 = 448 ✓
-//   fp  = 1.65µs target → 12 ticks = 1.714µs
-//   hs  = 4.7µs  target → 33 ticks = 4.714µs
-//   bp  = 5.7µs  target → 40 ticks = 5.714µs
-//   av  = 51.95µs target → 363 ticks = 51.857µs  (FB_WIDTH=360 + 3 px right pad)
-#define LINE_FP_PX          12      // front porch
+// ─── PAL line timing (6.9375MHz clock = teletext bit rate, 144.144ns/tick) ───
+// Pixel clock = teletext's 6.9375MHz EXACT via 111MHz sys / integer clkdiv 16, so
+// 1 teletext bit = 1 pixel and there is zero divider jitter (decoder PLL locks).
+// At this rate a 64µs line = exactly 444 px (teletext = 444 × line freq).
+// Line = 64µs = 444 ticks. Segments must sum to exactly 444.
+//   fp=11 + hs=33 + bp=40 + av=360 = 444 ✓
+//   fp  = 1.65µs target → 11 ticks = 1.586µs
+//   hs  = 4.7µs  target → 33 ticks = 4.757µs
+//   bp  = 5.7µs  target → 40 ticks = 5.766µs
+//   av  = 51.95µs target → 360 ticks = 51.895µs  (FB_WIDTH=360, no padding)
+#define LINE_FP_PX          11      // front porch
 #define LINE_HS_PX          33      // h-sync
 #define LINE_BP_PX          40      // back porch
-#define LINE_AV_PX          363     // active video (FB_WIDTH=360 + 3 px right padding)
-#define LINE_TOTAL_PX       448     // 12+33+40+363 = 448 ✓
+#define LINE_AV_PX          360     // active video (= FB_WIDTH, exact)
+#define LINE_TOTAL_PX       444     // 11+33+40+360 = 444 ✓
 
-// V-sync long pulse: 27.3µs → 191 ticks LOW, 257 ticks HIGH
-#define VSYNC_LOW_PX        191
-#define VSYNC_HIGH_PX       (LINE_TOTAL_PX - VSYNC_LOW_PX)  // 257
-
-// Frame structure:
-#define PAL_VSYNC_LINES     5
-#define PAL_BLANK_TOP       29                 // +12 lines pushes picture down
+// Frame structure: INTERLACED PAL (625 lines = 2 fields of 312.5 lines).
+// CANONICAL vertical sync: each field = 5 pre-eq + 5 broad + 5 post-eq half-line
+// pulses (15 half-lines = 7.5 lines), IDENTICAL for both fields. Each field totals
+// 625 half-lines (= 312.5 lines) — an ODD number of half-lines, so field 2's line
+// grid lands automatically offset by half a line from field 1. THAT half-line
+// offset IS the interlace and gives a decoder valid field identification.
+//   field = 15 half (vsync) + 305 full lines (610 half) = 625 half = 312.5 lines
+//   305 content lines = 16 teletext/top-blank + 256 active + 33 bottom-blank
+// Teletext sits on the first content lines (≈ PAL lines 8-23, inside the 7-22 window).
+#define PAL_BLANK_TOP       16                 // VBI blank lines (carry teletext)
 #define PAL_ACTIVE_LINES    FB_HEIGHT          // 256
-#define PAL_BLANK_BOT       22                 // 5+29+256+22 = 312 ✓
-#define PAL_TOTAL_LINES     312
+#define PAL_BLANK_BOT       33                 // 16+256+33 = 305 content lines/field
+
+// Vsync pulse widths (per half-line of 222px @144.15ns):
+#define HALF_LINE_PX        222                // 32µs
+#define EQ_LOW_PX           14                 // 2µs pre/post equalizing low
+#define BROAD_LOW_PX        208                // 30µs broad sync low (222−14)
+// Canonical PAL: 5 + 5 + 5 = 15 half-lines per field (same both fields).
+#define VS_PRE_EQ  5
+#define VS_BROAD   5
+#define VS_POST_EQ 5
+
+// ─── Teletext VBI insertion ──────────────────────────────────────────────────
+// Teletext data must start ~12.0µs after the line sync reference. At 144.144ns/px,
+// 12µs ≈ 83 px from line start. 360 data bits = 360 px → ends at 83+360 = 443 of
+// 444. Bit clock = pixel clock = 6.93750MHz (integer clkdiv) = teletext rate exactly.
+#define TTX_START_PX        83       // px from line start to first teletext bit (~12µs)
+#define TTX_DATA_BITS       360      // 45 bytes × 8 (ends at 83+360=443 of 444)
+// Which VBI lines carry teletext, and which page row each sends. We place them in
+// the top blank region (after vsync). Field-1 teletext lives ~lines 7..22; here we
+// map a contiguous block of blank lines to page rows 0..N.
+#define TTX_FIRST_BLANK_LINE 0       // index into PAL_BLANK_TOP to start (PAL line ~9)
+#define TTX_NUM_LINES        16      // how many VBI lines to fill with teletext rows
+
+// Teletext debug view (switch DOWN, was snow): render the actual teletext packets
+// onto VISIBLE scanlines so the run-in/framing/data show as pixels. Each page row
+// is drawn TTX_DEBUG_ZOOM scanlines tall. Crisp even stripes at the far left (the
+// 0x55 run-in) = good data eye; smeared/grey = the 144ns slew problem made visible.
+#define TTX_DEBUG_ZOOM      8        // scanlines per page row in the debug view
 
 // ─── DMA word stream ─────────────────────────────────────────────────────────
-// 2 bits/pixel now. 448 px/line × 312 lines = 139776 px × 2 = 279552 bits.
-// ceil(279552/32) = 8736 words/frame.  word_buf[2][8736] = 69888 B (~70KB).
-#define FRAME_WORDS         8736
+// 2 bits/pixel, INTERLACED frame = 625 lines.
+//   field1 = 16 half-lines vsync + (26+256+23)*444 = 16*222 + 305*444 = 138972 px
+//   field2 = 14 half-lines vsync + (26+256+23)*444 = 14*222 + 305*444 = 138528 px
+//   frame  = 277500 px × 2 bits = 555000 bits → ceil/32 = 17344 words.
+// word_buf[2][17344] = 138752 B (~136KB). Total RAM ~70%.
+#define FRAME_WORDS         17344
 
 // Double-buffered word streams: Core 1 writes to back buffer, DMA reads from front.
 static uint32_t __attribute__((aligned(4))) word_buf[2][FRAME_WORDS];
@@ -125,6 +168,7 @@ struct SharedState {
     volatile bool     pulse_clear;   // set on Pulse In 1 rising edge
     volatile bool     pulse_invert;  // true while Pulse In 2 is HIGH
     volatile uint8_t  sw_position;   // 0=UP(fade) 1=MID(static) 2=DOWN(snow)
+    volatile int32_t  knob_main;     // KnobVal(Main): 0..4095 (test mode: on-width)
 };
 static SharedState shared;
 
@@ -167,6 +211,85 @@ static const uint8_t level_pair[3] = {
     /*BLACK*/ 0b10,   // Pu1 HIGH via 1kΩ only → small pedestal above sync
     /*WHITE*/ 0b00,   // both jack HIGH → brightest
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Teletext (World System Teletext) VBI encoder
+//
+// A data line = 45 bytes = 360 bits, transmitted LSB-first at 6.9375 MHz (our pixel
+// clock is set to exactly this, so 1 teletext bit = 1 pixel). Structure:
+//   [0]   0x55  clock run-in   (1010...)
+//   [1]   0x55  clock run-in
+//   [2]   0x27  framing code   (transmission-order 11100100)
+//   [3]   Hamming 8/4: magazine (b1..b3) + row bit b4   (low nibble of addr)
+//   [4]   Hamming 8/4: row bits b5..b8 ... (high nibble of addr)
+//   [5..] for row 0 (header): 8 Hamming bytes (page units/tens, subcode, control),
+//         then 32 odd-parity character bytes.
+//         for rows 1..24: 40 odd-parity character bytes.
+// We build each line into a 45-byte buffer (true byte values), then the scan-out
+// packs it LSB-first into pixels (bit=1 → WHITE, bit=0 → BLACK).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Hamming 8/4 encode table: 4 data bits → 8-bit protected byte (transmission order).
+// Standard WST table (ETS 300 706 Table 8). Index = 4-bit data value 0..15.
+static const uint8_t ttx_hamming[16] = {
+    0x15, 0x02, 0x49, 0x5E, 0x64, 0x73, 0x38, 0x2F,
+    0xD0, 0xC7, 0x8C, 0x9B, 0xA1, 0xB6, 0xFD, 0xEA,
+};
+
+// Odd parity: set b8 (0x80) so the total number of set bits is odd.
+static inline uint8_t ttx_parity(uint8_t v) {
+    v &= 0x7F;
+    uint8_t p = v;
+    p ^= p >> 4; p ^= p >> 2; p ^= p >> 1;   // p&1 = parity of the 7 bits
+    return (p & 1) ? v : (uint8_t)(v | 0x80); // odd → already odd; even → set b8
+}
+
+// Build a 45-byte teletext packet for a display row (1..24) into out[45].
+static void ttx_build_row(uint8_t *out, int magazine, int row, const uint8_t *data40) {
+    out[0] = 0x55; out[1] = 0x55; out[2] = 0x27;   // run-in + framing
+    // Address: 5-bit (mag low 3 bits + row low 2 bits) in first Hamming byte's data,
+    // remaining row bits in the second. Packing per WST: addr = (row<<3)|magazine,
+    // split into two 4-bit Hamming-coded nibbles, low nibble first.
+    int addr = ((row & 0x1F) << 3) | (magazine & 0x07);
+    out[3] = ttx_hamming[addr & 0x0F];
+    out[4] = ttx_hamming[(addr >> 4) & 0x0F];
+    for (int i = 0; i < 40; i++) out[5 + i] = ttx_parity(data40[i]);
+}
+
+// Build the page-header packet (row 0) into out[45]. Page units/tens are Hamming
+// coded; control bits + subcode follow; then 32 character bytes (cols 8..39).
+static void ttx_build_header(uint8_t *out, int magazine, int page,
+                             const uint8_t *data40) {
+    out[0] = 0x55; out[1] = 0x55; out[2] = 0x27;
+    int addr = (0 << 3) | (magazine & 0x07);       // row 0
+    out[3] = ttx_hamming[addr & 0x0F];
+    out[4] = ttx_hamming[(addr >> 4) & 0x0F];
+    // Page units/tens + subcode S1-S4 + control bits C4-C14, all Hamming 8/4 coded.
+    // Matches vbit2 Packet::Header() exactly. subcode=0, control=0 → a clean valid
+    // header (all-zero subcode/control bytes = ttx_hamming[0] = 0x15).
+    int units = page & 0x0F;
+    int tens  = (page >> 4) & 0x0F;
+    out[5]  = ttx_hamming[units];                  // page units
+    out[6]  = ttx_hamming[tens];                   // page tens
+    out[7]  = ttx_hamming[0x00];                   // S1 (subcode bits 0-3)
+    out[8]  = ttx_hamming[0x00];                   // S2 (3 bits) + C4 (erase)
+    out[9]  = ttx_hamming[0x00];                   // S3 (subcode bits)
+    out[10] = ttx_hamming[0x00];                   // S4 (2 bits) + C5,C6
+    out[11] = ttx_hamming[0x00];                   // C7-C10
+    out[12] = ttx_hamming[0x00];                   // C11-C14 (C11=0 → parallel mode)
+    // Columns 8..39 of the header row carry display chars (cols 0..7 = page clock).
+    for (int i = 8; i < 40; i++) out[5 + i] = ttx_parity(data40[i]);
+}
+
+// Pre-encoded packets for the whole page (built once at init). 45 bytes/row.
+static uint8_t ttx_packets[TTX_ROWS][45];
+
+static void ttx_encode_page() {
+    ttx_build_header(ttx_packets[0], TTX_MAGAZINE, TTX_PAGE, ttx_page[0]);
+    for (int r = 1; r < TTX_ROWS; r++) {
+        ttx_build_row(ttx_packets[r], TTX_MAGAZINE, r, ttx_page[r]);
+    }
+}
 
 static void build_frame_words(int back, bool invert) {
     uint32_t *buf = word_buf[back];
@@ -212,26 +335,41 @@ static void build_frame_words(int back, bool invert) {
         emit_const(BLACK, LINE_BP_PX + LINE_AV_PX);
     };
 
-    // V-sync line: short front porch, long sync pulse, rest black
-    auto emit_vsync_line = [&]() {
+    // Half-line vsync pulses (each 224px = 32µs):
+    //   equalizing: 2µs low + 30µs high   (short narrow pulse)
+    //   broad sync: 30µs low + 2µs high   (wide pulse, serrated)
+    auto emit_eq_half    = [&]() { emit_const(SYNC, EQ_LOW_PX);    emit_const(BLACK, HALF_LINE_PX - EQ_LOW_PX); };
+    auto emit_broad_half = [&]() { emit_const(SYNC, BROAD_LOW_PX); emit_const(BLACK, HALF_LINE_PX - BROAD_LOW_PX); };
+
+    // Teletext VBI line: normal sync, then 360 data bits starting at TTX_START_PX.
+    // Each teletext bit → 1 pixel: bit=1 → WHITE, bit=0 → BLACK. Bytes are sent
+    // LSB-first (b1 first) per the WST spec. packet = 45 bytes already encoded.
+    // DATA BITS ARE SACROSANCT: emitted 1:1, NO dither and NO white-dilation (writes
+    // word_buf directly, bypassing frame_buffer). If a lone WHITE bit can't slew to
+    // full white in 144ns through the resistor DAC, that's an analog/level issue to
+    // fix in hardware — never by widening or altering the bit pattern.
+    auto emit_ttx_line = [&](const uint8_t *packet) {
+        // Sync + lead-in: front porch black, h-sync, then black up to data start.
         emit_const(BLACK, LINE_FP_PX);
-        emit_const(SYNC,  VSYNC_LOW_PX);
-        emit_const(BLACK, VSYNC_HIGH_PX - LINE_FP_PX);
+        emit_const(SYNC,  LINE_HS_PX);
+        emit_const(BLACK, TTX_START_PX - LINE_FP_PX - LINE_HS_PX);
+        // 360 data bits, LSB-first within each byte.
+        for (int byte = 0; byte < 45; byte++) {
+            uint8_t b = packet[byte];
+            for (int bit = 0; bit < 8; bit++) {
+                uint32_t pair = (b & 1u) ? level_pair[WHITE] : level_pair[BLACK];
+                cur_word = (cur_word << 2) | (pair & 0x3);
+                bit_pos += 2;
+                if (bit_pos == 32) commit_word();
+                b >>= 1;
+            }
+        }
+        // Pad remainder of the line to LINE_TOTAL_PX with black.
+        emit_const(BLACK, LINE_TOTAL_PX - TTX_START_PX - TTX_DATA_BITS);
     };
 
-    // V-sync lines (0 .. PAL_VSYNC_LINES-1)
-    for (int l = 0; l < PAL_VSYNC_LINES; l++) {
-        emit_vsync_line();
-    }
-
-    // Top blank lines
-    for (int l = 0; l < PAL_BLANK_TOP; l++) {
-        emit_blank_line();
-    }
-
-    // Active video. Framebuffer bit SET = white pixel, CLEAR = black pixel.
-    // invert swaps WHITE/BLACK selection.
-    for (int row = 0; row < PAL_ACTIVE_LINES; row++) {
+    // One active picture line from the framebuffer.
+    auto emit_active_line = [&](int row) {
         emit_const(BLACK, LINE_FP_PX);   // front porch (black)
         emit_const(SYNC,  LINE_HS_PX);   // h-sync
         emit_const(BLACK, LINE_BP_PX);   // back porch (black)
@@ -240,19 +378,48 @@ static void build_frame_words(int back, bool invert) {
             bool set = (fb_row[p / 8] >> (7 - (p & 7))) & 1u;
             if (invert) set = !set;
             uint32_t pair = level_pair[set ? WHITE : BLACK] & 0x3;
-            for (int s = 0; s < PIXEL_STRETCH; s++) {
-                cur_word = (cur_word << 2) | pair;
-                bit_pos += 2;
-                if (bit_pos == 32) commit_word();
-            }
+            cur_word = (cur_word << 2) | pair;
+            bit_pos += 2;
+            if (bit_pos == 32) commit_word();
         }
-        emit_const(BLACK, LINE_AV_PX - FB_WIDTH);  // right-pad to fill LINE_AV_PX (363-360 = 3 px)
-    }
+        emit_const(BLACK, LINE_AV_PX - FB_WIDTH);  // right-pad (0 px at FB_WIDTH=360)
+    };
 
-    // Bottom blank lines
-    for (int l = 0; l < PAL_BLANK_BOT; l++) {
-        emit_blank_line();
-    }
+    // Build one field: canonical 5-5-5 half-line vsync + top-blank (carrying
+    // teletext) + active picture + bottom-blank. Both fields IDENTICAL; each is
+    // 625 half-lines (odd) so field 2 lands half a line offset → interlace.
+    // Teletext goes on BOTH fields (matches raspi-teletext).
+    auto build_field = [&]() {
+        for (int i = 0; i < VS_PRE_EQ;  i++) emit_eq_half();
+        for (int i = 0; i < VS_BROAD;   i++) emit_broad_half();
+        for (int i = 0; i < VS_POST_EQ; i++) emit_eq_half();
+        for (int l = 0; l < PAL_BLANK_TOP; l++) {
+            int ttx_row = l - TTX_FIRST_BLANK_LINE;
+            if (ttx_row >= 0 && ttx_row < TTX_NUM_LINES && ttx_row < TTX_ROWS)
+                emit_ttx_line(ttx_packets[ttx_row]);
+            else
+                emit_blank_line();
+        }
+        // Switch DOWN = teletext debug view: render the actual teletext packets onto
+        // visible scanlines (same faithful bitstream the VBI uses, no dither/dilation)
+        // so the run-in/framing/data can be seen and judged. Each page row is drawn
+        // TTX_DEBUG_ZOOM scanlines tall so it's easy to see. Lets us diagnose without
+        // a capture stick: crisp even left-edge stripes (run-in) = good data eye.
+        bool ttx_debug = (shared.sw_position == 2);
+        for (int row = 0; row < PAL_ACTIVE_LINES; row++) {
+            if (ttx_debug) {
+                int drow = row / TTX_DEBUG_ZOOM;       // which page row this line shows
+                if (drow < TTX_ROWS) { emit_ttx_line(ttx_packets[drow]); continue; }
+            }
+            emit_active_line(row);
+        }
+        for (int l = 0; l < PAL_BLANK_BOT; l++) emit_blank_line();
+    };
+
+    // Two identical fields. Each = 15 half (vsync) + 305 full lines = 625 half-lines
+    // = 312.5 lines. The odd half-line count offsets field 2 → proper interlace.
+    build_field();
+    build_field();
 
     // Flush remaining partial word, padding LSBs with BLACK pairs
     if (bit_pos > 0) {
@@ -271,6 +438,58 @@ static void build_frame_words(int back, bool invert) {
         buf[word_idx++] = black_fill;
     }
 }
+
+#if TEST_PATTERN
+// ─────────────────────────────────────────────────────────────────────────────
+// Hardware test-pattern rig. Writes geometric patterns DIRECTLY into frame_buffer
+// (raw bits — no grey buffer, no dither, no dilation) so we see the true analog
+// edge behaviour of the DAC. Four quadrants of 180×128:
+//   TL: 1px vertical lines    TR: 1px horizontal lines
+//   BL: 1×1 checkerboard      BR: width ramp (1,2,3,4,...px runs)
+// Main knob → ON_STRETCH (0..8 px): each "on" pixel extended rightward, live, so we
+// can watch when thin white snaps to full white. (Horizontal lines are the baseline,
+// unaffected by horizontal stretch.)
+// ─────────────────────────────────────────────────────────────────────────────
+static void __not_in_flash_func(draw_test_pattern)() {
+    const int HW = FB_WIDTH / 2;    // 180  quadrant width
+    const int HH = FB_HEIGHT / 2;   // 128  quadrant height
+    int stretch = (int)(shared.knob_main * 8 / 4095);   // 0..8 extra px per "on"
+
+    memset(frame_buffer, 0, FB_SIZE);
+
+    // Helper: set pixel (x,y) plus `stretch` pixels to its right (clipped).
+    auto put = [&](int x, int y) {
+        for (int k = 0; k <= stretch; k++) {
+            int xx = x + k;
+            if (xx >= 0 && xx < FB_WIDTH && y >= 0 && y < FB_HEIGHT)
+                FB_SET(frame_buffer, y, xx);
+        }
+    };
+
+    for (int y = 0; y < FB_HEIGHT; y++) {
+        for (int x = 0; x < FB_WIDTH; x++) {
+            bool left = (x < HW), top = (y < HH);
+            bool on = false;
+            if (top && left) {
+                on = (x & 1) == 0;                       // TL: vertical 1px lines
+            } else if (top && !left) {
+                on = (y & 1) == 0;                       // TR: horizontal 1px lines
+            } else if (!top && left) {
+                on = ((x ^ y) & 1) == 0;                 // BL: 1×1 checkerboard
+            } else {
+                // BR: width ramp. Pattern period = run(w) on + w off, w cycling 1..8.
+                int lx = x - HW;
+                int w = 1, pos = lx;
+                while (pos >= 2 * w) { pos -= 2 * w; w++; if (w > 8) w = 1; }
+                on = (pos < w);                          // w px on, then w px off
+            }
+            if (on) put(x, y);   // (stretch handled in put)
+        }
+    }
+    // NOTE: put() applies stretch by OR-ing pixels right; for the base patterns above
+    // we only call put at the pattern's "on" origin columns, so stretch widens runs.
+}
+#endif
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Framebuffer drawing
@@ -308,7 +527,7 @@ static const uint8_t dither[GREY_LEVELS][2] = {
 // scan order → renders full white. MSB = leftmost pixel, so "right" = toward the LSB
 // (right shift). We track a rolling history of the last 8 emitted bits so the dilate
 // crosses byte boundaries for any N up to 7.
-#define WHITE_DILATE 2
+#define WHITE_DILATE 4   // measured: an isolated white px needs ~5px (1+4) to reach true white
 static inline void dilate_white_right(uint8_t *fb) {
     // 'spill' holds the WHITE_DILATE rightmost source bits of the previous byte,
     // left-aligned into the top bits, ready to flow into this byte's MSBs.
@@ -407,7 +626,7 @@ static inline int32_t map_knob_offset_cv(int32_t cv, int32_t knob, int32_t max_o
     return base + offset;
 }
 
-static void __not_in_flash_func(update_framebuffer)() {
+[[maybe_unused]] static void __not_in_flash_func(update_framebuffer)() {
     // Snapshot volatile shared state once. (CV is read per-sample from the etch
     // ring below, not from this snapshot.)
     uint8_t  mode    = shared.mode;
@@ -437,10 +656,8 @@ static void __not_in_flash_func(update_framebuffer)() {
             break;
         case 1: // MIDDLE — static, no modification
             break;
-        case 2: // DOWN — snow: write a random grey level into every cell
-            for (int i = 0; i < GREY_SIZE; i++) {
-                grey_buffer[i] = (uint8_t)(lcg_rand() % GREY_LEVELS);
-            }
+        case 2: // DOWN — teletext debug view (build_field overwrites active lines
+                // with teletext packets). Nothing to do to the grey buffer here.
             break;
     }
 
@@ -542,6 +759,17 @@ static void __not_in_flash_func(core1_main)() {
     gpio_set_function(VIDEO_GPIO,     GPIO_FUNC_PIO0);
     gpio_set_function(VIDEO_GPIO + 1, GPIO_FUNC_PIO0);
 
+    // Max drive (12mA) + fast slew on BOTH DAC pins, configured IDENTICALLY so the two
+    // legs switch with matched edge speed. The PIO already drives both bits on the same
+    // clock edge (out pins,2), so this removes any pad-level asymmetry and stiffens the
+    // outputs to charge the node faster — sharper black↔white edges (helps the teletext
+    // run-in crispness and the picture). (The residual edge slew asymmetry from the
+    // unequal 1kΩ/220Ω resistors is inherent to the 2-bit DAC and is a hardware matter.)
+    gpio_set_drive_strength(VIDEO_GPIO,     GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(VIDEO_GPIO + 1, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_slew_rate(VIDEO_GPIO,     GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(VIDEO_GPIO + 1, GPIO_SLEW_RATE_FAST);
+
     // Load PIO program
     uint offset = pio_add_program(pio, &video_out_program);
 
@@ -549,7 +777,7 @@ static void __not_in_flash_func(core1_main)() {
     pio_sm_config c = video_out_program_get_default_config(offset);
     sm_config_set_out_pins(&c, VIDEO_GPIO, 2);     // GPIO 8,9 = 2-bit video DAC
     sm_config_set_out_shift(&c, false, true, 32);  // shift left, autopull, threshold=32
-    sm_config_set_clkdiv(&c, 144.0f/7.0f);         // 144 MHz / 20.571 = 7.000 MHz = 142.857 ns/pixel
+    sm_config_set_clkdiv(&c, 16.0f);               // 111MHz/16 = 6.93750 MHz EXACT, INTEGER divider (no jitter)
 
     pio_sm_set_consecutive_pindirs(pio, sm, VIDEO_GPIO, 2, true);  // GPIO 8,9 output
     pio_sm_init(pio, sm, offset, &c);
@@ -563,6 +791,7 @@ static void __not_in_flash_func(core1_main)() {
     dma_channel_claim(dma_chan);
 
     // Build initial frame (back buffer = 1, active = 0)
+    ttx_encode_page();            // pre-encode all teletext packets once
     memset(grey_buffer, 0, GREY_SIZE);
     memset(frame_buffer, 0, FB_SIZE);
     expand_grey_to_fb();          // ensure frame_buffer is valid before first pack
@@ -602,6 +831,13 @@ static void __not_in_flash_func(core1_main)() {
         }
         vblank_ready = false;
 
+#if TEST_PATTERN
+        // Static test rig: write raw patterns straight into frame_buffer (no grey,
+        // no dither, no dilation). build_frame_words just scans frame_buffer.
+        draw_test_pattern();
+        int back = 1 - active_buf;
+        build_frame_words(back, false);
+#else
         // Update framebuffer with new Eurorack I/O state
         update_framebuffer();
 
@@ -609,6 +845,7 @@ static void __not_in_flash_func(core1_main)() {
         int back = 1 - active_buf;
         bool invert = shared.pulse_invert;
         build_frame_words(back, invert);
+#endif
 
         // Swap buffers: next DMA IRQ handler will restart using the new active_buf.
         // The current DMA is already running (restarted in IRQ handler) using the OLD active_buf.
@@ -639,6 +876,12 @@ public:
     }
 
     void __not_in_flash_func(ProcessSample)() override {
+#if TEST_PATTERN
+        // Test mode: only the Main knob matters (tunes on-pulse width). All other
+        // input handling is set aside.
+        shared.knob_main = KnobVal(Knob::Main);
+        return;
+#else
         // Mode: main knob ≥ mid selects etch-a-sketch, below = oscilloscope
         shared.mode = (KnobVal(Knob::Main) >= 2048) ? 1 : 0;
 
@@ -671,7 +914,8 @@ public:
         LedOn(1, shared.mode == 1);    // etch-a-sketch mode
         LedOn(2, shared.pulse_invert); // invert active
         LedOn(3, shared.sw_position == 0); // fade active
-        LedOn(4, shared.sw_position == 2); // snow active
+        LedOn(4, shared.sw_position == 2); // teletext debug view active
+#endif
     }
 };
 
@@ -679,6 +923,10 @@ public:
 CathodeRay g_card;
 
 int main() {
-    set_sys_clock_khz(144000, true);
+    // 111.000 MHz = exact integer multiple of the 6.9375 MHz teletext bit rate
+    // (clkdiv 16, PLL fbdiv 74 /2/4). Gives a jitter-free pixel/bit clock — a
+    // fractional PIO divider smears the teletext data eye and decoders won't lock.
+    // (138.75/277.5 MHz from the spec notes are NOT RP2040 PLL-achievable.)
+    set_sys_clock_khz(111000, true);
     g_card.Run();  // blocking — never returns
 }

@@ -1,6 +1,6 @@
 ; composite.pio — 2-bit (4-level) PAL video output for RP2040
 ;
-; Single state machine, runs at 144MHz / 20.571 ≈ 7.000 MHz (142.857 ns per pixel).
+; Single state machine, runs at 111MHz / 16 = 6.9375 MHz exact (144.144 ns per pixel).
 ; Uses autopull (shift-left, 32-bit threshold) so DMA feeds the FIFO continuously.
 ; Each 'out pins, 2' shifts TWO bits to GPIO 8,9: 1 instruction = 1 pixel = 1 SM cycle.
 ;
@@ -15,18 +15,18 @@
 ; DMA loops this stream continuously. Core 1 double-buffers the word stream and
 ; swaps in a new frame during the vertical blanking period.
 ;
-; Line timing at 7.000 MHz (all values in pixel-clock cycles ≈ 142.857 ns each):
-;   Front porch :  12 cycles  HIGH  (1.714 µs, target 1.650 µs)
-;   H-sync      :  33 cycles  LOW   (4.714 µs, target 4.700 µs)
-;   Back porch  :  40 cycles  HIGH  (5.714 µs, target 5.700 µs)
-;   Active video: 363 cycles  DATA  (51.857 µs, target 51.950 µs)
-;   Total       : 448 cycles        (64.000 µs, target 64.000 µs, error 0%)
+; Line timing at 6.9375 MHz (all values in pixel-clock cycles = 144.144 ns each):
+;   Front porch :  11 cycles  (1.586 µs)
+;   H-sync      :  33 cycles  (4.757 µs)
+;   Back porch  :  40 cycles  (5.766 µs)
+;   Active video: 360 cycles  (51.895 µs)
+;   Total       : 444 cycles  (64.000 µs)   ← 444 = teletext 444×line freq
 ;
-; All 448 pixels per line are packed into ceil(448/32) = 14 words.
-; The C code handles the bit-packing across the full frame word buffer.
+; This pixel rate = the WST teletext bit rate, so 1 teletext bit = 1 pixel and the
+; VBI data lines are packed bit-for-pixel by the C code.
 ;
-; V-sync long pulse (27.3 µs = 191.1 px ≈ 191 px LOW, rest HIGH): encoded as
-; LOW/HIGH words in the sync line pre-amble. Same line period (448 px).
+; Vertical sync is interlaced (two fields, 5+5+5 half-line pulses each) — the C code
+; emits the half-line equalizing/broad pulses directly as level patterns.
 
 .program video_out
 
@@ -37,11 +37,11 @@
 ; Configuration (in C):
 ;   sm_config_set_out_pins(&c, VIDEO_GPIO, 2);
 ;   sm_config_set_out_shift(&c, false, true, 32);  // shift left, autopull, threshold=32
-;   sm_config_set_clkdiv(&c, 144.0f/7.0f);        // 144 MHz / 20.571 = 7.000 MHz
+;   sm_config_set_clkdiv(&c, 16.0f);              // 111 MHz / 16 = 6.9375 MHz (integer)
 ;   pio_sm_set_consecutive_pindirs(pio, sm, VIDEO_GPIO, 2, true);  // GPIO8,9 output
 ;
-; With autopull and a single 'out pins,1' in a .wrap loop:
-;   - Each iteration = 1 SM cycle = ~20.57 sys-cycles = 142.857 ns = 1 pixel clock.
+; With autopull and a single 'out pins,2' in a .wrap loop:
+;   - Each iteration = 1 SM cycle = 16 sys-cycles = 144.144 ns = 1 pixel clock.
 ;   - When OSR empties (every 32 pixels), autopull refills from FIFO in the same cycle
 ;     if FIFO is non-empty (DMA keeps it fed). Zero stall if DMA is fast enough.
 ;   - DMA uses DREQ_PIO0_TX0 (or TX1 depending on SM number) to pace transfers.
