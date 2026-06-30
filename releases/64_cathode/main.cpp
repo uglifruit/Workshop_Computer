@@ -139,16 +139,20 @@ struct SharedState {
     volatile int32_t  scope_baseline;    // X knob in scope: 0..GREY_H-1 centre-line row
     volatile int32_t  knob_main;     // KnobVal(Main): 0..4095 (far-CCW=etch, else scope speed)
     volatile int32_t  audio_in2;     // AudioIn2() raw -2048..2047 (CV_FX selector)
-    volatile bool     pulse_clear;   // set on Pulse In 1 rising edge
     volatile uint8_t  sw_position;   // 0=UP(fade) 1=MID(static) 2=DOWN(effect / menu)
     // Trigger sources (Core 0 latches edges; Core 1 reads, clears the *_rising latches).
+    // Three independent: switch-DOWN→cfg_sw, PU1→cfg_pu1, PU2→cfg_pu2.
     volatile bool     down_held;     // switch DOWN currently held
     volatile bool     down_rising;   // switch DOWN just pressed (latch)
+    volatile bool     pu1_held;      // Pulse In 1 currently high
+    volatile bool     pu1_rising;    // Pulse In 1 rising edge (latch)
     volatile bool     pu2_held;      // Pulse In 2 currently high
     volatile bool     pu2_rising;    // Pulse In 2 rising edge (latch)
-    // Config (set in menu; RAM-only). Defaults reproduce original firmware.
-    volatile uint8_t  cfg_down;      // Behaviour for switch-DOWN (default BHV_CYCLE_FX)
-    volatile uint8_t  cfg_pu2;       // Behaviour for Pulse In 2  (default BHV_INVERT)
+    // Config (set in menu; RAM-only). Three independent triggers. Defaults reproduce
+    // original firmware (DOWN cycles effects, PU2 inverts).
+    volatile uint8_t  cfg_sw;        // Behaviour for switch-DOWN (Main knob; def CYCLE FX)
+    volatile uint8_t  cfg_pu1;       // Behaviour for Pulse In 1  (Knob X; def CYCLE FX)
+    volatile uint8_t  cfg_pu2;       // Behaviour for Pulse In 2  (Knob Y; def INVERT)
     volatile bool     menu_active;   // true while the config menu is showing
     volatile bool     alt_mode;      // true if DOWN held at boot → screensaver
 };
@@ -346,8 +350,9 @@ static const int BHV_FX_MAP[6] = {
 
 // Per-trigger-source effect state (so switch-DOWN and Pu2 don't fight each other).
 struct FxState { int fx_index; uint32_t fx_phase; bool strobe_invert; };
-static FxState fx_down = {0,0,false};
-static FxState fx_pu2  = {0,0,false};
+static FxState fx_down = {0,0,false};   // switch DOWN
+static FxState fx_pu1  = {0,0,false};   // Pulse In 1 (same behaviour as DOWN)
+static FxState fx_pu2  = {0,0,false};   // Pulse In 2
 
 // ─── Oscilloscope sweep (knob-controlled speed, fixed-point accumulator) ──────
 // scope_x is the integer sweep column. scope_acc accumulates fractional columns each
@@ -554,7 +559,7 @@ static int font_index(char c) {
 }
 
 // Draw a text string into grey_buffer at grey-cell (gx,gy) top-left, given level.
-// 6 cells per glyph (5px + 1 gap). Clipped to the buffer.
+// 8 cells per glyph (5px glyph + 3px gap). Clipped to the buffer.
 static void draw_text(int gx, int gy, const char *s, uint8_t level) {
     for (; *s; s++) {
         const uint8_t *g = font5x7[font_index(*s)];
@@ -569,7 +574,7 @@ static void draw_text(int gx, int gy, const char *s, uint8_t level) {
                 }
             }
         }
-        gx += 6;
+        gx += 8;   // 5px glyph + 3px gap
         if (gx >= GREY_W) break;
     }
 }
@@ -691,11 +696,14 @@ static bool __not_in_flash_func(apply_behaviour)(int bhv, bool held, bool rising
 // Config menu render (Core 1). X knob = switch-DOWN behaviour, Y = Pu2 behaviour.
 static void __not_in_flash_func(draw_menu)() {
     memset(grey_buffer, 0, GREY_SIZE);
-    draw_text(4,  4,  "CONFIG",  GREY_LEVELS - 1);
-    draw_text(4,  28, "SW DN:",  GREY_LEVELS - 2);
-    draw_text(48, 28, BHV_NAMES[shared.cfg_down], GREY_LEVELS - 1);
-    draw_text(4,  48, "PU2:",    GREY_LEVELS - 2);
-    draw_text(48, 48, BHV_NAMES[shared.cfg_pu2],  GREY_LEVELS - 1);
+    draw_text(4,  2,  "CONFIG", GREY_LEVELS - 1);
+    // Three independent triggers: DOWN (Main knob), PU1 (Knob X), PU2 (Knob Y).
+    draw_text(4,  22, "DOWN",   GREY_LEVELS - 2);
+    draw_text(4,  32, BHV_NAMES[shared.cfg_sw],  GREY_LEVELS - 1);
+    draw_text(4,  56, "PU1",    GREY_LEVELS - 2);
+    draw_text(4,  66, BHV_NAMES[shared.cfg_pu1], GREY_LEVELS - 1);
+    draw_text(4,  90, "PU2",    GREY_LEVELS - 2);
+    draw_text(4, 100, BHV_NAMES[shared.cfg_pu2], GREY_LEVELS - 1);
 }
 
 // Alt-boot screensaver (placeholder): a bouncing block leaving phosphor trails.
@@ -720,35 +728,34 @@ static void __not_in_flash_func(update_framebuffer)() {
     int32_t  gyn     = shared.etch_cvgain_y;
     uint8_t  sw      = shared.sw_position;
     bool     etch    = (knob < ETCH_THRESH);   // far-CCW = etch (CV1 vs CV2)
-
-    // Pulse In 1: clear grey buffer (atomic read-clear)
-    if (shared.pulse_clear) {
-        shared.pulse_clear = false;
-        memset(grey_buffer, 0, GREY_SIZE);
-        scope_x = 0; scope_acc = 0; fade_cols = 0;
-        etch_have_prev = false;   // don't connect a line across the clear
-    }
+    // (Pulse In 1 is now a configurable trigger source — see below; clearing the screen
+    //  is available as the CLS behaviour.)
 
     // Alt boot mode = screensaver (placeholder), full takeover.
     if (shared.alt_mode) { screensaver_step(); expand_grey_to_fb(); return; }
 
     // Config menu takeover (entered by moving X/Y while DOWN — state owned by Core 0).
-    if (shared.menu_active) { draw_menu(); expand_grey_to_fb(); return; }
+    // Force invert off so the menu is always readable (white-on-black).
+    if (shared.menu_active) { effect_invert = false; draw_menu(); expand_grey_to_fb(); return; }
 
-    // Trigger sources: switch-DOWN (cfg_down) and Pulse In 2 (cfg_pu2). Each can run any
-    // configured behaviour. Read-and-clear the rising-edge latches set by Core 0.
+    // Three independent trigger sources: switch-DOWN→cfg_sw, PU1→cfg_pu1, PU2→cfg_pu2.
+    // Each has its own FxState so they don't fight. Read-and-clear the rising latches.
     bool down_held   = shared.down_held;
     bool down_rising = shared.down_rising; shared.down_rising = false;
+    bool pu1_held    = shared.pu1_held;
+    bool pu1_rising  = shared.pu1_rising;  shared.pu1_rising  = false;
     bool pu2_held    = shared.pu2_held;
     bool pu2_rising  = shared.pu2_rising;  shared.pu2_rising  = false;
 
     bool swap_xy = false;
     fx_down.strobe_invert = false;
+    fx_pu1.strobe_invert  = false;
     fx_pu2.strobe_invert  = false;
     bool finished = false;
-    finished |= apply_behaviour(shared.cfg_down, down_held, down_rising, fx_down, swap_xy);
-    finished |= apply_behaviour(shared.cfg_pu2,  pu2_held,  pu2_rising,  fx_pu2,  swap_xy);
-    effect_invert = fx_down.strobe_invert || fx_pu2.strobe_invert;
+    finished |= apply_behaviour(shared.cfg_sw,  down_held, down_rising, fx_down, swap_xy);
+    finished |= apply_behaviour(shared.cfg_pu1, pu1_held,  pu1_rising,  fx_pu1,  swap_xy);
+    finished |= apply_behaviour(shared.cfg_pu2, pu2_held,  pu2_rising,  fx_pu2,  swap_xy);
+    effect_invert = fx_down.strobe_invert || fx_pu1.strobe_invert || fx_pu2.strobe_invert;
     if (finished) { expand_grey_to_fb(); return; }
 
     if (!etch) {
@@ -985,8 +992,9 @@ class CathodeRay : public ComputerCard {
 public:
     CathodeRay() {
         memset((void *)&shared, 0, sizeof(shared));
-        shared.cfg_down = BHV_CYCLE_FX;   // defaults reproduce original firmware
-        shared.cfg_pu2  = BHV_INVERT;
+        shared.cfg_sw  = BHV_CYCLE_FX;    // defaults reproduce original firmware
+        shared.cfg_pu1 = BHV_CYCLE_FX;
+        shared.cfg_pu2 = BHV_INVERT;
         // Core 1 is launched here (constructor body), before Run() is called.
         // ComputerCard's hardware init runs in its constructor (which has already
         // completed by this point), so GPIO 8 is set up as gpio_out.
@@ -1024,12 +1032,12 @@ public:
 
         shared.audio_in2 = AudioIn2();   // CV_FX selector source
 
-        if (PulseIn1RisingEdge()) {
-            shared.pulse_clear = true;
-        }
-
-        // Pulse In 2 as a trigger source: publish held level + latch the rising edge
+        // Pulse In 1 is its own trigger source (cfg_pu1). Held + latched rising edge
         // (Core 1 reads-and-clears; a Core 1 poll could miss fast pulses).
+        shared.pu1_held = PulseIn1();
+        if (PulseIn1RisingEdge()) shared.pu1_rising = true;
+
+        // Pulse In 2 as a trigger source: publish held level + latch the rising edge.
         shared.pu2_held = PulseIn2();
         if (PulseIn2RisingEdge()) shared.pu2_rising = true;
 
@@ -1060,11 +1068,12 @@ public:
         // seen_release gates the UI machine so a boot-hold doesn't also fire an effect.
         static bool boot_latched = false, seen_release = false;
         static uint8_t ui_state = 0;          // 0=NORMAL 1=EFFECT 2=MENU
-        static int32_t entry_x = 0, entry_y = 0;       // knob raw at DOWN press
-        static int32_t menu_ax = 0, menu_ay = 0;       // knob raw at menu entry
-        static bool menu_x_eng = false, menu_y_eng = false;
+        static int32_t entry_x = 0, entry_y = 0, entry_m = 0;  // knob raw at DOWN press
+        static int32_t menu_ax = 0, menu_ay = 0, menu_am = 0;  // knob raw at menu entry
+        static bool menu_x_eng = false, menu_y_eng = false, menu_m_eng = false;
         static bool prev_down = false;
         int32_t rawX = KnobVal(Knob::X), rawY = KnobVal(Knob::Y);
+        int32_t rawM = shared.knob_main;      // Main knob (selects cfg_sw in the menu)
         if (!boot_latched && boot_ctr >= 4800) {
             shared.alt_mode = down;           // DOWN held through boot → screensaver
             boot_latched = true;
@@ -1076,16 +1085,17 @@ public:
             bool rising = down && !prev_down;
             switch (ui_state) {
                 case 0: // NORMAL
-                    if (rising) { ui_state = 1; entry_x = rawX; entry_y = rawY; }
+                    if (rising) { ui_state = 1; entry_x = rawX; entry_y = rawY; entry_m = rawM; }
                     break;
                 case 1: // EFFECT — running an effect; a knob move opens the menu
                     if (!down) { ui_state = 0; }
                     else {
                         int dx = rawX-entry_x; if (dx<0) dx=-dx;
                         int dy = rawY-entry_y; if (dy<0) dy=-dy;
-                        if (dx >= MENU_MOVE_THRESH || dy >= MENU_MOVE_THRESH) {
-                            ui_state = 2; menu_ax = rawX; menu_ay = rawY;
-                            menu_x_eng = menu_y_eng = false;
+                        int dm = rawM-entry_m; if (dm<0) dm=-dm;
+                        if (dx >= MENU_MOVE_THRESH || dy >= MENU_MOVE_THRESH || dm >= MENU_MOVE_THRESH) {
+                            ui_state = 2; menu_ax = rawX; menu_ay = rawY; menu_am = rawM;
+                            menu_x_eng = menu_y_eng = menu_m_eng = false;
                         }
                     }
                     break;
@@ -1100,16 +1110,19 @@ public:
         if (ui_down_rising) shared.down_rising = true;
         shared.menu_active = (ui_state == 2);
 
-        // Config menu live selection: X → cfg_down, Y → cfg_pu2 (each engages only
-        // after moving ≥PICKUP_THRESH from the menu-entry anchor, so the knob that
-        // opened the menu doesn't instantly slam a value).
+        // Config menu live selection: Main → cfg_sw, X → cfg_pu1, Y → cfg_pu2. Each
+        // engages only after moving ≥PICKUP_THRESH from the menu-entry anchor, so the
+        // knob that opened the menu doesn't instantly slam a value.
         if (ui_state == 2) {
             int dx = rawX-menu_ax; if (dx<0) dx=-dx;
             int dy = rawY-menu_ay; if (dy<0) dy=-dy;
+            int dm = rawM-menu_am; if (dm<0) dm=-dm;
             if (dx >= PICKUP_THRESH) menu_x_eng = true;
             if (dy >= PICKUP_THRESH) menu_y_eng = true;
-            if (menu_x_eng) shared.cfg_down = clamp(rawX*BHV_COUNT/4096, 0, BHV_COUNT-1);
-            if (menu_y_eng) shared.cfg_pu2  = clamp(rawY*BHV_COUNT/4096, 0, BHV_COUNT-1);
+            if (dm >= PICKUP_THRESH) menu_m_eng = true;
+            if (menu_m_eng) shared.cfg_sw  = clamp(rawM*BHV_COUNT/4096, 0, BHV_COUNT-1);
+            if (menu_x_eng) shared.cfg_pu1 = clamp(rawX*BHV_COUNT/4096, 0, BHV_COUNT-1);
+            if (menu_y_eng) shared.cfg_pu2 = clamp(rawY*BHV_COUNT/4096, 0, BHV_COUNT-1);
         }
         // Knob destinations by mode + switch:
         //   ETCH + UP  → both SCALE      ETCH + MID → both OFFSET
@@ -1153,9 +1166,12 @@ public:
             }
         };
 
+        // Only run the etch/scope knob pickup when NOT holding DOWN — while DOWN is held
+        // the knobs belong to the effect/menu, so they must NOT move etch X/Y or scope
+        // params. (The next non-down frame re-binds with captured=false → no jump.)
         if (boot_ctr < 4800) {
             boot_ctr++;
-        } else {
+        } else if (!down) {
             run_pick(pkX, KnobVal(Knob::X), GREY_W - 1, desiredX, false);
             run_pick(pkY, KnobVal(Knob::Y), GREY_H - 1, desiredY, true); // Y offset inverted
         }

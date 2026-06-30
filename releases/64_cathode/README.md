@@ -62,7 +62,7 @@ The signal is **PAL** (50Hz). Displays locked to NTSC-only will not show it; mos
 | Audio In 1 | Oscilloscope trace (scope mode). Deflects the trace from centre; positive voltage = up. Gain set by Knob Y. |
 | CV In 1 | Etch-a-sketch X (etch mode). Scaled/offset by Knob X. Sampled at full 48 kHz. |
 | CV In 2 | Etch-a-sketch Y (etch mode). Scaled/offset by Knob Y. Sampled at full 48 kHz. |
-| Pulse In 1 | **Clear** — any rising edge instantly clears the screen to black. |
+| Pulse In 1 | **Trigger source** — runs the behaviour assigned in the config menu (default: CYCLE FX). Set it to CLS for the old screen-clear. |
 | Pulse In 2 | **Trigger source** — runs the behaviour assigned in the config menu (default: INVERT while held). |
 
 ---
@@ -109,11 +109,11 @@ Etch position = offset + CV × scale. CV is sampled at the full 48 kHz and every
 |----------|-----------|
 | **UP** | Phosphor fade. In scope mode the fade is **locked to the sweep** — a column reaches black just as the sweep returns to it, at any speed. In etch mode the fade rate is set by the main knob (~0.15–2 s). |
 | **MIDDLE** | Static — pixels persist. In scope mode each column is cleared just before redrawing (single clean trace); in etch mode drawings accumulate. |
-| **DOWN** (momentary) | **Trigger source** — runs the behaviour assigned to it in the config menu (default: cycle through the performance effects). Hold to run it. |
+| **DOWN** (momentary) | **Trigger source** (default: cycle the performance effects). Hold to run its assigned behaviour; while held, twist Main/X/Y to open the config menu. |
 
-### Trigger behaviours (assignable to Switch-DOWN and Pulse In 2)
+### Trigger sources & behaviours
 
-Both Switch-DOWN and Pulse In 2 are trigger sources; each is assigned one behaviour in the config menu. Defaults: **Switch-DOWN = CYCLE FX**, **Pulse In 2 = INVERT** (reproducing the original firmware).
+There are **three independent trigger sources** — Switch-DOWN, Pulse In 1, Pulse In 2 — each assigned one behaviour in the config menu. They run simultaneously, so you can have three different performance effects on the go at once. Defaults: **DOWN = CYCLE FX**, **PU1 = CYCLE FX**, **PU2 = INVERT**.
 
 | Behaviour | While triggered |
 |-----------|-----------------|
@@ -128,7 +128,7 @@ The six performance effects: **Strobe** (rapid flash), **Fade** (freeze + fade t
 
 ### Config menu
 
-While holding **Switch DOWN**, **twist Knob X or Y** to open the config menu (the effect stops and a text menu appears). **Knob X** selects the Switch-DOWN behaviour, **Knob Y** selects the Pulse In 2 behaviour. Release DOWN to exit; settings are kept (until power-off). The knob you twisted to enter only takes control of its setting once you move it a little further — so it won't jump.
+While holding **Switch DOWN**, **twist the Main knob, Knob X, or Knob Y** to open the config menu (the effect stops and a text menu appears). **Main knob** selects the DOWN behaviour, **Knob X** the Pulse In 1 behaviour, **Knob Y** the Pulse In 2 behaviour. Release DOWN to exit; settings are kept (until power-off). A knob only takes control of its setting once you move it a little — so the knob you twist to open the menu won't jump.
 
 ---
 
@@ -162,7 +162,7 @@ CV In 2 ──┘
 Main Knob ──────────────────────────► etch (far CCW) | scope speed slow→fast (CW)
 Switch ─────────────────────────────► UP=fade  MID=static  DOWN=performance effect (cycles)
 
-Pulse In 1 (rising edge) ───────────► clear framebuffer
+Pulse In 1 (gate) ──────────────────► configurable trigger (default: cycle FX)
 Pulse In 2 (gate) ──────────────────► configurable trigger (default: invert)
 
 Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu2 ─► [resistor DAC] ─► TV
@@ -179,7 +179,7 @@ Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu
 5. Try Switch **UP** (phosphor fade) for a glowing persistence trail that dissolves to black.
 6. Turn the Main Knob fully **CCW** (etch-a-sketch). Patch LFOs/CV into **CV In 1** and **CV In 2** — two slightly-detuned sine LFOs draw evolving Lissajous figures. Switch **UP** = Knob X/Y scale the CV; Switch **MIDDLE** = Knob X/Y reposition (offset).
 7. Hold **Switch DOWN** for the performance effect; tap it repeatedly to cycle effects. While holding DOWN, twist Knob X or Y to open the **config menu**.
-8. Send a gate into **Pulse In 1** to clear.
+8. Gate **Pulse In 1** / **Pulse In 2** to fire their configured effects (set them in the config menu; e.g. PU1 = CLS to clear).
 
 **Alt boot:** hold Switch DOWN while powering on to start in screensaver mode (placeholder).
 
