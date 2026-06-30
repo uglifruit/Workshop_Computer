@@ -181,7 +181,7 @@ Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu
 7. Hold **Switch DOWN** for the performance effect; tap it repeatedly to cycle effects. While holding DOWN, twist Knob X or Y to open the **config menu**.
 8. Gate **Pulse In 1** / **Pulse In 2** to fire their configured effects (set them in the config menu; e.g. PU1 = CLS to clear).
 
-**Alt boot:** hold Switch DOWN while powering on to start in screensaver mode (placeholder).
+**Alt boot — screensaver:** hold Switch DOWN while powering on to start in screensaver mode — a bouncing block with phosphor trails, to protect a CRT from burn-in. (More screensaver patterns planned.)
 
 ---
 

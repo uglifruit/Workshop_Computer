@@ -696,14 +696,14 @@ static bool __not_in_flash_func(apply_behaviour)(int bhv, bool held, bool rising
 // Config menu render (Core 1). X knob = switch-DOWN behaviour, Y = Pu2 behaviour.
 static void __not_in_flash_func(draw_menu)() {
     memset(grey_buffer, 0, GREY_SIZE);
-    draw_text(4,  2,  "CONFIG", GREY_LEVELS - 1);
+    draw_text(6,  2,  "CONFIG", GREY_LEVELS - 1);
     // Three independent triggers: DOWN (Main knob), PU1 (Knob X), PU2 (Knob Y).
-    draw_text(4,  22, "DOWN",   GREY_LEVELS - 2);
-    draw_text(4,  32, BHV_NAMES[shared.cfg_sw],  GREY_LEVELS - 1);
-    draw_text(4,  56, "PU1",    GREY_LEVELS - 2);
-    draw_text(4,  66, BHV_NAMES[shared.cfg_pu1], GREY_LEVELS - 1);
-    draw_text(4,  90, "PU2",    GREY_LEVELS - 2);
-    draw_text(4, 100, BHV_NAMES[shared.cfg_pu2], GREY_LEVELS - 1);
+    draw_text(6,  22, "DOWN",   GREY_LEVELS - 2);
+    draw_text(6,  32, BHV_NAMES[shared.cfg_sw],  GREY_LEVELS - 1);
+    draw_text(6,  56, "PU1",    GREY_LEVELS - 2);
+    draw_text(6,  66, BHV_NAMES[shared.cfg_pu1], GREY_LEVELS - 1);
+    draw_text(6,  90, "PU2",    GREY_LEVELS - 2);
+    draw_text(6, 100, BHV_NAMES[shared.cfg_pu2], GREY_LEVELS - 1);
 }
 
 // Alt-boot screensaver (placeholder): a bouncing block leaving phosphor trails.
