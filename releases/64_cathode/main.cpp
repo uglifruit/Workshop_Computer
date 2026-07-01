@@ -1750,6 +1750,7 @@ static void __not_in_flash_func(screensaver_maze)() {
     if (!init) { init = true; gen(); }
 
     dilate_cap = 2;                                // thicker walls (dilate one more pixel)
+    effect_invert = shared.pu2_held;               // PU2 held → invert (white-on-black accent)
     memset(grey_buffer, 0, GREY_SIZE);
 
     // ── Scare state: flash + big monster, then reset. ──
@@ -1785,10 +1786,10 @@ static void __not_in_flash_func(screensaver_maze)() {
     if (auto_on) {                                 // ── AUTOPLAY ──
         if (auto_card < 0) { auto_card = 0; last_cell = -1; }
         int this_cell = celly*MAZ_W + cellx;
-        // On entering a NEW cell, snap to its centre and decide: straight if open, else turn.
+        // Decide ONCE per cell (no teleport). Straight travel flows smoothly; only when a
+        // turn is actually needed do we pin to the cell centre so the pivot is clean.
         if (this_cell != last_cell) {
             last_cell = this_cell;
-            px = cxc; py = cyc;                     // land cleanly on the cell centre
             if (!open_dir(auto_card)) {             // straight blocked → turn
                 int left = (auto_card+3)&3, right = (auto_card+1)&3;
                 bool lo = open_dir(left), ro = open_dir(right);
@@ -1796,6 +1797,7 @@ static void __not_in_flash_func(screensaver_maze)() {
                 else if (lo)       auto_card = left;
                 else if (ro)       auto_card = right;
                 else               auto_card = (auto_card+2)&3;          // dead end → U-turn
+                px = cxc; py = cyc;                 // pin to centre only for the turn pivot
                 turning = true;                     // rotate to face it before walking on
             }
         }
@@ -2016,7 +2018,7 @@ static const char *ALT_HELP[ALT_COUNT][5] = {
     /* STARFIELD    */ { "MAIN:SPEED", "X/CV1:TURN H", "Y/CV2:TURN V", "", "" },
     /* RADAR        */ { "MAIN:AIM PU1:FIRE", "PU2/CV1:PLACE ENEMY", "OUT1:SWEEP", "OUT2:HIT", "" },
     /* LUNAR        */ { "MAIN/CV1:ROTATE", "PU1/DOWN:THRUST", "OUT1:ALT", "OUT2:CRASH", "" },
-    /* 3DMAZE       */ { "MAIN:TURN PU1:FWD", "X/CV1:AUTORUN", "AVOID MONSTER", "OUT2:CAUGHT", "" },
+    /* 3DMAZE       */ { "MAIN:TURN PU1:FWD", "X/CV1:AUTORUN", "PU2:INVERT", "AVOID MONSTER", "OUT2:CAUGHT" },
 };
 
 // Draw text right-justified so it ends at grey column `gright` (font advance 9 cells/glyph).
@@ -2068,6 +2070,7 @@ static void __not_in_flash_func(update_framebuffer)() {
     // Alt boot mode: a selectable set of performance-tool/screensaver hybrids.
     // Switch UP = selector menu (Main knob picks); MID/DOWN = run the selected hybrid.
     if (shared.alt_mode) {
+        effect_invert = false;                    // default; a mode may set it (maze: PU2)
         if (shared.sw_position == 0) {           // UP → selector
             draw_alt_menu();
         } else {                                  // MID/DOWN → play selected

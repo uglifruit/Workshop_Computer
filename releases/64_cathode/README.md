@@ -221,7 +221,7 @@ Classic Lunar Lander. **Main / CV In 1 rotate** the craft; **PU1 / Switch DOWN t
 
 ### 3D Maze
 
-A chunky first-person **wireframe maze** (ZX81 3D Monster Maze style) with a roaming monster. **Main knob turns** (smoothly), **PU1 / Switch DOWN walks** forward; movement is rail-locked to corridor centres. Turn **Knob X up (or patch CV In 1)** for a hands-free **auto-run** that drives itself through the maze, turning only where it must. If the monster reaches you the screen flashes and a new maze is generated. **CV Out 2 pulses when you're caught.**
+A chunky first-person **wireframe maze** (ZX81 3D Monster Maze style) with a roaming monster. **Main knob turns** (smoothly), **PU1 / Switch DOWN walks** forward; movement is rail-locked to corridor centres. Turn **Knob X up (or patch CV In 1)** for a hands-free **auto-run** that drives itself through the maze, turning only where it must. **Hold Pulse In 2** to invert the screen (white-on-black) — a momentary performative accent. If the monster reaches you the screen flashes and a new maze is generated. **CV Out 2 pulses when you're caught.**
 
 ---
 
@@ -262,6 +262,7 @@ A chunky first-person **wireframe maze** (ZX81 3D Monster Maze style) with a roa
 - **CV outputs in alt boot**: CV Out 1 / CV Out 2 are now mode-dependent (pitch/height/altitude/sweep and hit/bounce/crash/caught pulses).
 - Removed the **CV FX** config-menu behaviour (little-used); effect list now includes **ROLL**.
 - Font polish (M/N/W legibility), a **slash** glyph, and text rendered with reduced dilation for crisp menus.
+- **3DMAZE**: smooth rail-locked auto-run (no cell-hopping) and **Pulse In 2 = invert** accent.
 - Panel overlay image added.
 
 ### v1.0.0
