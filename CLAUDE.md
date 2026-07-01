@@ -180,6 +180,77 @@ This was a major sticking point in Chorgan development. The correct scaling:
 - A naive triangle fold using `>> 17` (15-bit counter, fold at 16384) produces **asymmetric halves** — rising 0→16383, falling 32767→16384. Sounds like a descending ramp
 - Correct approach: `>> 16` gives a 16-bit counter (0–65535), fold at 32768, `>> 1` to scale — both halves symmetric 0→16383→0
 
+### White noise generator — correct bit shift
+
+A common mistake when generating white noise from a 32-bit LFSR (`rng_next()`):
+
+```cpp
+// WRONG — produces range −1024..+31743, severe positive DC rail
+int32_t white = (int32_t)(rng_next() >> 17) - 1024;
+
+// CORRECT — produces ±1024, zero mean
+int32_t white = (int32_t)(rng_next() >> 21) - 1024;
+```
+
+`>> 17` takes bits 31:17 (15 bits = 0..32767), then subtracts 1024 → range −1024..+31743. Symptom: Y knob seems to do nothing at low values, then suddenly silences audio when noise overwhelms the signal — looks like a knob scaling bug, is actually DC.
+
+`>> 21` takes bits 31:21 (11 bits = 0..2047), subtract 1024 → ±1023, zero mean.
+
+### IIR Hilbert quadrature pair — behavioural SSB shift
+
+For single-sideband frequency shift without a full encode/decode pipeline, use two 4-section 2nd-order all-pass chains with a 90° phase difference. This is the technique used in OffAir for the detuning whistle/shift effect.
+
+- Path I: 4 × 2nd-order all-pass sections (coefficients kHilbA)
+- Path B: 4 × 2nd-order all-pass sections (coefficients kHilbB) + 1 sample delay
+- I/Q at a given frequency f: `shifted = (I*cos(f) - Q*sin(f)) >> 7`
+- Use a phase accumulator for the shift frequency; advance by `kWhistleInc` per sample
+- Q14 fixed-point coefficients; each section: `y = a*(x - y_prev) + x_prev` (Schüssler structure)
+
+Key design point: don't try to AM-encode the input and then decode at a detuned carrier — the audible result of detuning is a *combination* of whistle pitch + SSB shift + distortion that's much cheaper to synthesise directly (behavioural model).
+
+### Baked audio — 12-bit packed format
+
+For audio stored in flash (interference clips, broadcast recordings), two encodings work well:
+
+**8-bit offset binary at 8kHz** — interference/noise clips. Compact (8KB/s), mono, unsigned: 128 = silence, 0 = −full, 255 = +full. Unpack: `(int32_t)byte - 128`.
+
+**12-bit packed signed at 11025Hz** — higher-quality broadcast/station clips. 2 samples per 3 bytes (~16.5KB/s):
+```
+byte0 = A[11:4]
+byte1 = (A[3:0]<<4) | B[11:8]
+byte2 = B[7:0]
+```
+Unpack in C:
+```cpp
+int32_t a = (int32_t)((byte0<<4)|(byte1>>4)); if(a>=2048)a-=4096;
+int32_t b = (int32_t)(((byte1&0xF)<<8)|byte2); if(b>=2048)b-=4096;
+```
+
+Playback: fractional accumulator per clip. Add `clip_sr` each `ProcessSample()` call; advance index by 1 when accumulator ≥ 48000; subtract 48000. Use `if`, not `while` — a clip playing at 48kHz would never advance more than once per sample anyway.
+
+### Flash budget for baked-audio firmware
+
+OffAir at v1.0.0 uses ~85.5% of the 2MB flash with 6 interference clips + 2 broadcast clips baked in. Rough budgeting:
+- 8kHz uint8 mono: **8KB/s**
+- 11025Hz 12-bit packed mono: **~16.5KB/s**
+- Total flash: 2048KB. RP2040 firmware overhead + code typically ~150–250KB. Budget audio to fit in the remainder.
+- `pico_add_extra_outputs` + `target_link_options(... -Wl,--print-memory-usage)` prints flash/RAM usage at link time — watch for > 90% flash as a warning.
+
+### CV loopback — self-patching tuning
+
+Pattern used in OffAir: **CV Out 2 = relative offset** (dial position minus current tuning smoother), so patching CV Out 2 → CV In 1 makes the module self-track to a fixed reference point on the dial.
+
+The key constraint: CV In 1 must be **1:1 gain** (not amplified) and CV Out 2 must output a **difference**, not an absolute position. If either side has gain ≠ 1 or outputs absolute position, the loop will oscillate or not converge.
+
+```cpp
+// CV Out 2: relative offset to Station 1 dial position
+int32_t b1off = clamp(dialPos[0] - smMain, -2048, 2047);
+CVOut2((int16_t)b1off);
+
+// CV In 1: 1:1 addition (no gain)
+int32_t tunePos = smMain + CVIn1();
+```
+
 ### Self-contained releases/ folder
 Every `releases/<number>_<name>/` folder intended for Tom's card listing should be **fully self-contained** (see `releases/91_chorgan/` as the reference):
 - `ComputerCard.h` — copy of **our fixed version** (not upstream's)
@@ -205,12 +276,21 @@ Clock-synced beat-repeater (Glitch mode) + breakbeat slicer (Stutter mode). Mode
 - Integer-only DSP, 224KB circular buffer (112,000 samples = 2.33s), ~89.5% RAM
 - ADC settle gotcha: SwitchVal() reads 0 (= Switch::Down) at boot — wait 4800 samples before reading mode
 
-### Chorgan (`examples/chordseq/`) — v1.0.0
-6-voice morphing chord synthesizer with chord extension presets and built-in 8-chord sequencer. Two boot modes: normal (detune/chorus) and slew (portamento). Chord-triggered envelope on PU2/CV2.
+### Chorgan (`examples/chordseq/`) — v1.1.0
+6-voice morphing chord synthesizer with chord extension presets and built-in 8-chord sequencer. Two boot modes: normal (detune/chorus) and slew (portamento). Chord-triggered envelope on PU2/CV2. Audio In 1 = slew speed CV; Audio In 2 = chord inversions.
 - Released at: `releases/91_chorgan/`
-- PR to Tom's repo: #194 (merged 2026-06-22)
+- GitHub release: `uglifruit/Workshop_Computer/releases/tag/chorgan-v1.1.0`
+- PR to Tom's repo: #194 (merged 2026-06-22), v1.1.0 via PR #197 (merged 2026-06-24), info.yaml fix via PR #204 (merged 2026-06-27)
 - Integer-only DSP, 6 phase accumulators, V/oct lookup table from Chris Johnson's Utility Pair
 - Key lesson: CV In 1 V/oct scaling is 409 counts/octave (not 341) — see CV In 1 section above
+
+### OffAir (`examples/offair/`) — v1.0.0
+AM/SW/LW shortwave radio simulator. Behavioural demodulation model (no encode/decode): heterodyne whistle, SSB frequency shift via IIR Hilbert quadrature pair, AM off-tune distortion, noise swell/swish. Two live audio inputs = Station 1/2; baked altboot mode with real numbers-station recordings. Six interference clips baked in flash.
+- Released at: `releases/95_offair2/`
+- GitHub release: `uglifruit/Workshop_Computer/releases/tag/offair-v1.0.0`
+- PR to Tom's repo: #203 (merged 2026-06-27)
+- Flash: ~85.5% (baked audio clips dominate). RAM usage modest — no large audio buffers
+- Key DSP lessons: SSB shift, IIR Hilbert pair, 12-bit packed audio, white noise generator bug — see sections below
 
 ### Renaissance (`examples/spread/`) — v1.0.0
 6-voice harmonic spread oscillator. CV2/Knob Y morphs through stacked intervals (unison → m3 → M3 → 5ths → octaves) with landmark snapping. Knob X = detune (when CV1 patched). Main knob = timbre (sine → triangle → saw).
