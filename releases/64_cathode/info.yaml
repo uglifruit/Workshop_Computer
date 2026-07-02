@@ -51,8 +51,9 @@ manual: |
      range); PU2 (CV1 sets radius) drops fading target blocks. CV Out 2 = pulse on a hit.
    • LUNAR — Lunar Lander. Main / CV1 rotate, PU1 / DOWN thrust; land gently on the pad
      (narrows each stage) avoiding drifting UFOs. CV Out 1 = altitude, CV Out 2 = crash.
-   • 3DMAZE — first-person wireframe maze with a roaming monster. Main turns, PU1 / DOWN
-     walks; Knob X / CV1 = hands-free auto-run. CV Out 2 = pulse when the monster catches you.
+   • 3DMAZE — first-person wireframe maze. Main turns, PU1 / DOWN walks; Knob X / CV1 =
+     hands-free auto-run. Find the glowing white EXIT panel on a wall (reaching it flashes and
+     generates a new maze). CV Out 2 = pulse when you reach the exit.
 
 panel:
   inputs:
@@ -83,7 +84,7 @@ panel:
       description: Alt-boot only — mode-dependent (Patchteroids pitch / Boing height / etc). Unused in the main synth.
     - id: CVOut2
       name: Alt-boot Trigger
-      description: Alt-boot only — mode-dependent event pulse (hit / bounce / crash / caught). Unused in the main synth.
+      description: Alt-boot only — mode-dependent event pulse (hit / bounce / crash / reached exit). Unused in the main synth.
 
 controls:
   modes:

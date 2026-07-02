@@ -39,7 +39,7 @@ Default mode = COMET. Each mode's on-screen help lines:
 | **STARFIELD** | MAIN : speed · X/CV1 : turn horizontal · Y/CV2 : turn vertical |
 | **RADAR** | MAIN : aim · PU1 : fire (hold = power) · PU2/CV1 : place enemy (CV1 = radius) · OUT2 : hit |
 | **LUNAR** | MAIN/CV1 : rotate · PU1/DOWN : thrust · OUT1 : altitude · OUT2 : crash |
-| **3DMAZE** | MAIN : turn · PU1 : forward · X/CV1 : auto-run · PU2 : invert · OUT2 : caught |
+| **3DMAZE** | MAIN : turn · PU1 : forward · X/CV1 : auto-run · PU2 : invert · OUT2 : reached exit |
 
 Notes:
 - **PATCHTEROIDS** — shoot comets (they split); pitch climbs per hit, arpeggiates down on a
@@ -48,7 +48,8 @@ Notes:
   a Peaks-style shortening bounce rhythm.
 - **RADAR** — hold to charge missile range; PU2 stamps fading target blocks on the sweep.
 - **LUNAR** — land gently & upright on the pad (narrows each stage), avoid UFOs; limited fuel.
-- **3DMAZE** — first-person wireframe maze + roaming monster; turn Knob X up (or patch CV1)
-  for hands-free auto-run; hold PU2 to invert as an accent.
+- **3DMAZE** — first-person wireframe maze; **find the white EXIT panel** on a wall (reaching
+  it flashes and generates a new maze). Turn Knob X up (or patch CV1) for hands-free auto-run;
+  hold PU2 to invert as an accent.
 
 All alt-boot modes also serve as CRT-friendly screensavers.

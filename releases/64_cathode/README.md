@@ -204,7 +204,7 @@ Boot straight into MID/DOWN (without visiting the selector) and you get **COMET*
 | 4 | **STARFIELD** | Fly through a 3D starfield. Main = speed; Knob X / CV1 = horizontal turn, Knob Y / CV2 = vertical turn. |
 | 5 | **RADAR** | A radar scope (see below). |
 | 6 | **LUNAR** | Lunar Lander (see below). |
-| 7 | **3DMAZE** | First-person wireframe maze with a monster (see below). |
+| 7 | **3DMAZE** | First-person wireframe maze — find the exit (see below). |
 
 Each mode shows its own control map on the selector page, so you don't need to memorise them. Highlights of the interactive ones:
 
@@ -226,7 +226,7 @@ Classic Lunar Lander. **Main / CV In 1 rotate** the craft; **PU1 / Switch DOWN t
 
 ### 3D Maze
 
-A chunky first-person **wireframe maze** (ZX81 3D Monster Maze style) with a roaming monster. **Main knob turns** (smoothly), **PU1 / Switch DOWN walks** forward; movement is rail-locked to corridor centres. Turn **Knob X up (or patch CV In 1)** for a hands-free **auto-run** that drives itself through the maze, turning only where it must. **Hold Pulse In 2** to invert the screen (white-on-black) — a momentary performative accent. If the monster reaches you the screen flashes and a new maze is generated. **CV Out 2 pulses when you're caught.**
+A chunky first-person **wireframe maze** (ZX81 3D Monster Maze style). **Main knob turns** (smoothly), **PU1 / Switch DOWN walks** forward; movement is rail-locked to corridor centres. Somewhere in the maze a **glowing white EXIT panel** sits on a wall — **find it**: reaching it flashes the screen and generates a fresh maze. Turn **Knob X up (or patch CV In 1)** for a hands-free **auto-run** that drives itself through the maze, turning only where it must. **Hold Pulse In 2** to invert the screen (white-on-black) — a momentary performative accent. **CV Out 2 pulses when you reach the exit.**
 
 ---
 
@@ -262,6 +262,9 @@ A chunky first-person **wireframe maze** (ZX81 3D Monster Maze style) with a roa
 - **Spectrum analyser** — the Main knob is now split into thirds: etch (lower), oscilloscope (middle), and a new **24-band audio spectrum analyser** (upper), driven by Audio In 1. Switch MIDDLE = radial pulsing blob (Knob X rotates it, leaves a grey echo trail); Switch UP = LED-segment bargraph. Bars decay (speed from the knob); a SWAP trigger mirrors bass↔treble.
 - **NTSC build** — `cathode_ray_ntsc.uf2` for US / 60 Hz displays, built from the same source via a `TV_NTSC` compile switch (identical features; a small top/bottom crop). PAL remains the default `cathode_ray.uf2`.
 - **Switch UP↔MIDDLE swapped** across all normal modes (DOWN unchanged): persistence/fade behaviours are now on MIDDLE, static/clean on UP.
+- **Spectrum has its own Knob X/Y** (rotate & gain) with pickup hysteresis — independent of the oscilloscope's baseline/gain, and only changing when actually turned.
+- **3DMAZE: find the EXIT** — the roaming monster is replaced by a glowing white **EXIT panel** on a wall; reach it to flash + generate a new maze (CV Out 2 pulses on reaching the exit).
+- **NTSC aesthetic polish** — content nudged in from the top/bottom crop so nothing clips, and a slightly **shorter 3D-maze wall height** (NTSC only) so more of the receding top/bottom diagonals show. PAL is unchanged.
 - Developer docs added (`CATHODE_DEV.md`, `MODES.md`).
 
 ### v1.1.0
