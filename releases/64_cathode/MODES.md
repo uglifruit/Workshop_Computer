@@ -53,12 +53,13 @@ Notes:
   it flashes and generates a new maze). Turn Knob X up (or patch CV1) for hands-free auto-run;
   hold PU2 to invert as an accent.
 - **FOURTRIG** — a trigger-driven visual "drum machine". **Audio In 1, Audio In 2, Pulse In 1
-  and Pulse In 2** are all trigger inputs; each stamps a "thing" into its own screen quadrant
-  (TL/TR/BL/BR), which then decays through the five greys to black. **Knob X** picks the bank
-  (WORDS / SHAPES / MUSIC-HITS / EMPHASIS / MIXED); **Knob Y (+CV In 2)** picks the set of four
-  within the bank; **Main (+CV In 1)** is CHAOS — at zero, tidy centred quadrants; turning it up
-  adds position jitter, quadrant swapping and size variation, and past ~50% a rising chance each
-  hit also fires a screen glitch. CV Out 2 pulses on every trigger. (Audio triggers fire on a
-  transient/gate crossing ~+0.4 V.)
+  and Pulse In 2** are all trigger inputs; each stamps a "thing" (thick 2×2 strokes) into its
+  own screen quadrant (TL/TR/BL/BR), which then decays through the five greys to black. **Knob X**
+  picks the bank — icons first, words last: SHAPES / MUSIC-HITS / SYMBOLS / WORDS / EMPHASIS;
+  **Knob Y (+CV In 2)** picks the set of four within the bank; **Main (+CV In 1)** is CHAOS — at
+  zero, tidy placement near screen centre at a modest size; turning it up adds position jitter,
+  quadrant swapping, and grows/varies the size, and past ~50% a rising chance each hit also fires
+  a screen glitch. CV Out 2 pulses on every trigger. (Audio triggers fire on a transient/gate
+  crossing ~+0.4 V.)
 
 All alt-boot modes also serve as CRT-friendly screensavers.

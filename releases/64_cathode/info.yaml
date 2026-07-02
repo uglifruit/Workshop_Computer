@@ -55,10 +55,11 @@ manual: |
      hands-free auto-run. Find the glowing white EXIT panel on a wall (reaching it flashes and
      generates a new maze). CV Out 2 = pulse when you reach the exit.
    • FOURTRIG — a trigger-driven visual drum machine. Audio In 1, Audio In 2, Pulse In 1 and
-     Pulse In 2 are all triggers; each stamps a decaying "thing" into one screen quadrant.
-     Knob X = bank (words / shapes / music-hits / emphasis / mixed), Knob Y (+ CV In 2) = the
-     set of four, Main (+ CV In 1) = CHAOS (jitter/swap placement, vary size, and past ~50% a
-     rising chance of a per-hit screen glitch). CV Out 2 = pulse on every trigger.
+     Pulse In 2 are all triggers; each stamps a decaying "thing" (thick 2×2 strokes) into one
+     screen quadrant. Knob X = bank (icons first, words last: shapes / music-hits / symbols /
+     words / emphasis), Knob Y (+ CV In 2) = the set of four, Main (+ CV In 1) = CHAOS (jitter/
+     swap placement, grow + vary size, and past ~50% a rising chance of a per-hit screen glitch).
+     CV Out 2 = pulse on every trigger.
 
 panel:
   inputs:
