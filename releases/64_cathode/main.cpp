@@ -66,37 +66,57 @@ static_assert(FB_HEIGHT % GREY_SCALE == 0, "GREY_SCALE must divide FB_HEIGHT");
 
 #define GREY_SET(buf, r, c, lvl) ((buf)[(r)*GREY_W + (c)] = (uint8_t)(lvl))
 
-// ─── PAL line timing (7.000MHz clock, 142.857ns/tick, divider=144/7) ─────────
-// Line = 64µs = 448 ticks. Segments must sum to exactly 448.
-//   fp=12 + hs=33 + bp=40 + av=363 = 448 ✓
-//   fp  = 1.65µs target → 12 ticks = 1.714µs
-//   hs  = 4.7µs  target → 33 ticks = 4.714µs
-//   bp  = 5.7µs  target → 40 ticks = 5.714µs
-//   av  = 51.95µs target → 363 ticks = 51.857µs  (FB_WIDTH=360 + 3 px right pad)
-#define LINE_FP_PX          12      // front porch
-#define LINE_HS_PX          33      // h-sync
-#define LINE_BP_PX          40      // back porch
+// ─── TV timing: PAL (default) or NTSC (build with -DTV_NTSC) ──────────────────
+// BOTH formats share the SAME 7.000 MHz pixel clock (144MHz / (144/7), 142.857 ns/tick)
+// and the SAME 360×256 framebuffer + 180×128 grey buffer — so ALL drawing code (scope,
+// etch, spectrum, every alt-boot mode) is identical for both. Only the line/frame TIMING
+// and the number of framebuffer rows scanned out (a small crop for NTSC) differ. This is
+// the ONE place PAL and NTSC diverge — everything else derives automatically.
+//   Frame-structure macros are format-neutral (TV_*) so build_frame_words() is shared.
+#ifdef TV_NTSC
+// NTSC: line = 63.556µs. At 7MHz → 445 ticks (63.571µs, +0.02%). 262 lines → 60.04Hz.
+//   fp=10 + hs=33 + bp=32 + av=370 = 445.  Active = 240 (a centred crop of the 256-row FB).
+#define LINE_FP_PX          10      // front porch (~1.5µs)
+#define LINE_HS_PX          33      // h-sync (~4.7µs)
+#define LINE_BP_PX          32      // back porch (~4.5µs)
+#define LINE_AV_PX          370     // active video (FB_WIDTH=360 + 10 px right padding)
+#define LINE_TOTAL_PX       445     // 10+33+32+370 = 445 ✓
+#define VSYNC_LOW_PX        190     // broad sync pulse LOW (~27µs)
+#define TV_VSYNC_LINES      6
+#define TV_BLANK_TOP        8
+#define TV_ACTIVE_LINES     240     // scan out 240 of the 256 FB rows (crop 8 top / 8 bot)
+#define TV_ACTIVE_ROW0      8       // first FB row scanned → centres the crop
+#define TV_BLANK_BOT        8       // 6+8+240+8 = 262 ✓
+#define TV_TOTAL_LINES      262
+#else
+// PAL: line = 64µs = 448 ticks. Segments sum to exactly 448. 312 lines → 50Hz.
+//   fp=12 + hs=33 + bp=40 + av=363 = 448 ✓  (av: FB_WIDTH=360 + 3 px right pad)
+#define LINE_FP_PX          12      // front porch (1.65µs → 1.714µs)
+#define LINE_HS_PX          33      // h-sync (4.7µs → 4.714µs)
+#define LINE_BP_PX          40      // back porch (5.7µs → 5.714µs)
 #define LINE_AV_PX          363     // active video (FB_WIDTH=360 + 3 px right padding)
 #define LINE_TOTAL_PX       448     // 12+33+40+363 = 448 ✓
-
-// V-sync long pulse: 27.3µs → 191 ticks LOW, 257 ticks HIGH
-#define VSYNC_LOW_PX        191
-#define VSYNC_HIGH_PX       (LINE_TOTAL_PX - VSYNC_LOW_PX)  // 257
-
-// Frame structure:
-#define PAL_VSYNC_LINES     5
-#define PAL_BLANK_TOP       33                 // picture vertical position (down vs default)
-#define PAL_ACTIVE_LINES    FB_HEIGHT          // 256
-#define PAL_BLANK_BOT       18                 // 5+33+256+18 = 312 ✓
-#define PAL_TOTAL_LINES     312
+#define VSYNC_LOW_PX        191     // V-sync long pulse: 27.3µs → 191 ticks LOW
+#define TV_VSYNC_LINES      5
+#define TV_BLANK_TOP        33      // picture vertical position (down vs default)
+#define TV_ACTIVE_LINES     FB_HEIGHT   // 256 — all FB rows
+#define TV_ACTIVE_ROW0      0
+#define TV_BLANK_BOT        18      // 5+33+256+18 = 312 ✓
+#define TV_TOTAL_LINES      312
+#endif
+#define VSYNC_HIGH_PX       (LINE_TOTAL_PX - VSYNC_LOW_PX)
 
 // ─── DMA word stream ─────────────────────────────────────────────────────────
-// 2 bits/pixel now. 448 px/line × 312 lines = 139776 px × 2 = 279552 bits.
-// ceil(279552/32) = 8736 words/frame.  word_buf[2][8736] = 69888 B (~70KB).
-#define FRAME_WORDS         8736
+// 2 bits/pixel, packed contiguously (16 px/word). Words per frame = ceil(px/16), where
+// px = LINE_TOTAL_PX × TV_TOTAL_LINES. This is the DMA transfer count and MUST match the
+// format exactly, or the frame period (and thus refresh rate / sync) is wrong.
+//   PAL : 448×312 = 139776 px → 8736 words.   NTSC: 445×262 = 116590 → 7287 words.
+#define FRAME_WORDS         ((LINE_TOTAL_PX * TV_TOTAL_LINES + 15) / 16)
+// Buffers are sized for the LARGER (PAL) frame so one allocation serves both formats.
+#define FRAME_WORDS_MAX     8736
 
 // Double-buffered word streams: Core 1 writes to back buffer, DMA reads from front.
-static uint32_t __attribute__((aligned(4))) word_buf[2][FRAME_WORDS];
+static uint32_t __attribute__((aligned(4))) word_buf[2][FRAME_WORDS_MAX];
 static volatile int active_buf = 0;  // which buffer DMA is currently reading
 
 // ─── Framebuffer (written by Core 1 during vblank) ───────────────────────────
@@ -282,23 +302,25 @@ static void build_frame_words(int back, bool invert) {
         emit_const(BLACK, VSYNC_HIGH_PX - LINE_FP_PX);
     };
 
-    // V-sync lines (0 .. PAL_VSYNC_LINES-1)
-    for (int l = 0; l < PAL_VSYNC_LINES; l++) {
+    // V-sync lines
+    for (int l = 0; l < TV_VSYNC_LINES; l++) {
         emit_vsync_line();
     }
 
     // Top blank lines
-    for (int l = 0; l < PAL_BLANK_TOP; l++) {
+    for (int l = 0; l < TV_BLANK_TOP; l++) {
         emit_blank_line();
     }
 
-    // Active video. Framebuffer bit SET = white pixel, CLEAR = black pixel.
-    // invert swaps WHITE/BLACK selection.
-    for (int row = 0; row < PAL_ACTIVE_LINES; row++) {
+    // Active video. TV_ACTIVE_LINES rows are scanned, starting at framebuffer row
+    // TV_ACTIVE_ROW0 (PAL: 0/256 = all rows; NTSC: 8/240 = a centred crop of the 256-row
+    // framebuffer, so the drawing geometry is identical for both formats).
+    // Framebuffer bit SET = white pixel, CLEAR = black; invert swaps WHITE/BLACK.
+    for (int row = 0; row < TV_ACTIVE_LINES; row++) {
         emit_const(BLACK, LINE_FP_PX);   // front porch (black)
         emit_const(SYNC,  LINE_HS_PX);   // h-sync
         emit_const(BLACK, LINE_BP_PX);   // back porch (black)
-        const uint8_t *fb_row = &frame_buffer[row * FB_STRIDE];
+        const uint8_t *fb_row = &frame_buffer[(TV_ACTIVE_ROW0 + row) * FB_STRIDE];
         for (int p = 0; p < FB_WIDTH; p++) {
             bool set = (fb_row[p / 8] >> (7 - (p & 7))) & 1u;
             if (invert) set = !set;
@@ -313,7 +335,7 @@ static void build_frame_words(int back, bool invert) {
     }
 
     // Bottom blank lines
-    for (int l = 0; l < PAL_BLANK_BOT; l++) {
+    for (int l = 0; l < TV_BLANK_BOT; l++) {
         emit_blank_line();
     }
 

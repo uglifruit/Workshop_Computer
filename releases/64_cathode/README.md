@@ -51,7 +51,11 @@ Any display with a **composite video input** (usually a yellow RCA phono socket)
 - Portable monitors with composite in
 - Video capture devices (Elgato Cam Link, etc.) — for recording or routing onward
 
-The signal is **PAL** (50Hz). Displays locked to NTSC-only will not show it; most modern TVs auto-detect.
+The signal is **PAL** (50Hz) by default. Most modern TVs auto-detect; a PAL-only set is fine.
+
+### NTSC build (US / 60Hz displays)
+
+For displays that only accept **NTSC** (common in the US), flash **`cathode_ray_ntsc.uf2`** instead of `cathode_ray.uf2`. It is the *same firmware* — identical features, controls and modes — retimed for NTSC (445 px/line, 262 lines, ~60Hz). The picture is cropped very slightly top and bottom to fit NTSC's fewer scanlines; everything else is identical to the PAL version. (The two are built from one source via a `TV_NTSC` compile switch, so both stay in lockstep.) PAL is the primary/tested build; the NTSC build is a courtesy for those without a multi-standard TV.
 
 ---
 
@@ -240,8 +244,8 @@ A chunky first-person **wireframe maze** (ZX81 3D Monster Maze style) with a roa
 
 ## Technical Notes
 
-- **Video format:** PAL composite, progressive (non-interlaced), 360×256 pixels at 50 frames per second.
-- **Pixel clock:** 144 MHz ÷ (144/7) = **7.000 MHz** exactly. Each pixel is ~142.857 ns. Line period 64.000 µs (PAL spec 64.00 µs). Frame 312 lines = 50 Hz.
+- **Video format:** composite, progressive (non-interlaced), 360×256 framebuffer. **PAL** build = 448 px/line, 312 lines, 50 Hz (`cathode_ray.uf2`). **NTSC** build = 445 px/line, 262 lines, ~60 Hz, scanning a centred 240-row crop of the same framebuffer (`cathode_ray_ntsc.uf2`). Both share one source; only an `#ifdef TV_NTSC` timing block differs, so all drawing/features are identical.
+- **Pixel clock:** 144 MHz ÷ (144/7) = **7.000 MHz** exactly (both formats). Each pixel is ~142.857 ns. PAL line 64.000 µs; NTSC line 63.571 µs (target 63.556).
 - **2-bit DAC output:** Each pixel is sent as a 2-bit symbol to GPIO 8 (Pu1) and GPIO 9 (Pu2) via PIO `out pins, 2`, summed externally into 3 composite levels (sync / black / white).
 - **Core allocation:** Core 1 is dedicated to video (PIO + DMA) for rock-solid sync; Core 0 runs all Eurorack I/O through ComputerCard at 48 kHz and pushes CV samples to Core 1 via a ring buffer.
 - **Greyscale:** half-resolution grey buffer (180×128, `GREY_SCALE`-configurable), **5 brightness levels** per cell, expanded each frame into the 1-bit framebuffer via a 2×2 spatial dither whose 4 orientations cycle every 2 frames (averages out the fixed pattern). Scan-out reads the 1-bit framebuffer unchanged. Dilation is **level-aware** — brighter levels are held on longer so the brightness ramp survives the DAC's slow rise (a lone dim pixel isn't flattened to white).
