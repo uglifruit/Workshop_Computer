@@ -241,7 +241,7 @@ A trigger-driven **visual "drum machine"**. All **four inputs are triggers** —
 - **WORDS** — drum/shout words (HAT · CLAP · KICK · SNARE, and four more sets).
 - **EMPHASIS** — punchy text stabs (YEAH! · NOPE · !!! · BANG …).
 
-**Knob Y (+ CV In 2)** picks which **set of four** within the bank (five sets, one per quadrant slot). **Main knob (+ CV In 1) = CHAOS**: at zero, things land tidily near the middle of the screen at a modest uniform size with no glitching. As you turn it up, placement gets **jittered and occasionally swapped between quadrants**, the icons/words **grow larger and their size varies**, and **past ~50%** each hit has a growing chance of **also firing a screen glitch** (corrupt / snow / roll) on top of the stamp. Shapes are drawn with thick (2×2) strokes. **CV Out 2 pulses on every trigger** so you can chain the visual hits back into your patch.
+**Knob Y (+ CV In 2)** picks which **set of four** within the bank (five sets, one per quadrant slot). **Main knob (+ CV In 1) = CHAOS**: at zero, things land tidily near the middle of the screen at a modest uniform size with no glitching. As you turn it up, placement gets **jittered and occasionally swapped between quadrants**, the icons/words **grow larger and their size varies**, and **past ~50%** each hit has a growing chance of **also firing a screen glitch** (corrupt / snow / roll) on top of the stamp. Shapes and words are drawn with thick (2×2) strokes. **Hold Switch DOWN for a momentary held glitch** (as in normal boot). **CV Out 2 pulses on every trigger** so you can chain the visual hits back into your patch.
 
 ---
 

@@ -40,7 +40,7 @@ Default mode = COMET. Each mode's on-screen help lines:
 | **RADAR** | MAIN : aim · PU1 : fire (hold = power) · PU2/CV1 : place enemy (CV1 = radius) · OUT2 : hit |
 | **LUNAR** | MAIN/CV1 : rotate · PU1/DOWN : thrust · OUT1 : altitude · OUT2 : crash |
 | **3DMAZE** | MAIN : turn · PU1 : forward · X/CV1 : auto-run · PU2 : invert · OUT2 : reached exit |
-| **FOURTRIG** | IN : Audio 1 / Audio 2 / PU1 / PU2 (4 triggers) · X : bank · Y/CV2 : set · MAIN/CV1 : chaos · OUT2 : trig |
+| **FOURTRIG** | IN : Audio 1 / Audio 2 / PU1 / PU2 (4 triggers) · X : bank · Y/CV2 : set · MAIN/CV1 : chaos · DOWN : held glitch · OUT2 : trig |
 
 Notes:
 - **PATCHTEROIDS** — shoot comets (they split); pitch climbs per hit, arpeggiates down on a
@@ -59,7 +59,7 @@ Notes:
   **Knob Y (+CV In 2)** picks the set of four within the bank; **Main (+CV In 1)** is CHAOS — at
   zero, tidy placement near screen centre at a modest size; turning it up adds position jitter,
   quadrant swapping, and grows/varies the size, and past ~50% a rising chance each hit also fires
-  a screen glitch. CV Out 2 pulses on every trigger. (Audio triggers fire on a transient/gate
-  crossing ~+0.4 V.)
+  a screen glitch. **Hold Switch DOWN** for a momentary held glitch (as in normal boot). CV Out 2
+  pulses on every trigger. (Audio triggers fire on a transient/gate crossing ~+0.4 V.)
 
 All alt-boot modes also serve as CRT-friendly screensavers.

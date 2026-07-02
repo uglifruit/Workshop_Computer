@@ -59,7 +59,7 @@ manual: |
      screen quadrant. Knob X = bank (icons first, words last: shapes / music-hits / symbols /
      words / emphasis), Knob Y (+ CV In 2) = the set of four, Main (+ CV In 1) = CHAOS (jitter/
      swap placement, grow + vary size, and past ~50% a rising chance of a per-hit screen glitch).
-     CV Out 2 = pulse on every trigger.
+     Hold Switch DOWN for a momentary held glitch. CV Out 2 = pulse on every trigger.
 
 panel:
   inputs:

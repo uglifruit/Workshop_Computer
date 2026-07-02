@@ -899,19 +899,36 @@ static const char *const FT_EMPH[FT_SETS][4] = {
     { "BANG",  "POW",  "ZAP",  "WHAM"   },
 };
 
-// Draw a word centred on grey (cx,cy) at `level` (uses the 9-cell glyph advance, 7 tall).
-static void __not_in_flash_func(ft_draw_word)(int cx, int cy, const char *s, uint8_t level) {
-    int n = 0; for (const char *p = s; *p; p++) n++;
-    int w = n * 9 - 4;                 // last glyph has no trailing gap
-    draw_text(cx - w / 2, cy - 3, s, level);
-}
-
 // ── Thick (2×2) drawing primitives for the shape stamps ──────────────────────────────
 // plot_dot is 2×1 grey cells (DOT_W×DOT_H); the shapes want a heftier 2×2 look, so ftD
 // stamps a 2×2 cell block and ftL draws a thick line out of it. Used by all ft_* shapes.
 static inline void ftD(int gx, int gy, uint8_t level) {
     plot_dot(gx, gy,     level);       // 2×1
     plot_dot(gx, gy + 1, level);       // → 2×2
+}
+
+// Draw a word centred on grey (cx,cy) at `level`, DOUBLED: each 5×7 glyph pixel becomes a
+// 2×2 grey block, so strokes are solid (reach full white) and the word reads larger.
+// Cell = 10 wide (5px×2) + 2 gap = 12 advance; 14 tall (7×2).
+static void __not_in_flash_func(ft_draw_word)(int cx, int cy, const char *s, uint8_t level) {
+    int n = 0; for (const char *p = s; *p; p++) n++;
+    const int ADV = 12;                        // per-glyph advance (10px glyph + 2px gap)
+    int w = n * ADV - 2;                        // last glyph has no trailing gap
+    int gx0 = cx - w / 2, gy0 = cy - 7;        // 14 tall → top = cy-7
+    int gx = gx0;
+    for (; *s; s++) {
+        const uint8_t *g = font5x7[font_index(*s)];
+        for (int row = 0; row < 7; row++) {
+            uint8_t bits = g[row];
+            for (int col = 0; col < 5; col++) {
+                if (bits & (0x10 >> col)) {
+                    int px = gx + col * 2, py = gy0 + row * 2;
+                    ftD(px, py, level);        // ftD is 2×2 → doubled pixel
+                }
+            }
+        }
+        gx += ADV;
+    }
 }
 static void __not_in_flash_func(ftL)(int x0, int y0, int x1, int y1, uint8_t level) {
     int adx = x1 - x0; if (adx < 0) adx = -adx;
@@ -1063,8 +1080,8 @@ static void __not_in_flash_func(ft_face)(int cx, int cy, int r, int mood, uint8_
     ftD(cx - r/2, cy - r/4, level); ftD(cx + r/2, cy - r/4, level);  // eyes
     if (mood == 0)      { for (int x=-r/2;x<=r/2;x++) ftD(cx+x, cy+r/2 - (sin_a((uint8_t)((x+r)*4))>>6), level); } // smile
     else if (mood == 1) ftL(cx - r/2, cy + r/3, cx + r/2, cy + r/3, level);   // flat
-    else if (mood == 2) { for (int x=-r/2;x<=r/2;x++) ftD(cx+x, cy+r/2 + (sin_a((uint8_t)((x+r)*4))>>6), level); } // frown
-    else                { ft_circle(cx, cy + r/3, r/4, level); }              // shock (O mouth)
+    else if (mood == 2) { for (int x=-r/2;x<=r/2;x++) ftD(cx+x, cy+r/4 + (sin_a((uint8_t)((x+r)*4))>>6), level); } // frown (raised so it clears the chin)
+    else                { ft_circle(cx, cy + r/4, r/4, level); }              // shock (O mouth)
 }
 static void __not_in_flash_func(ft_plus)(int cx, int cy, int r, uint8_t level) {
     ftL(cx-r, cy, cx+r, cy, level); ftL(cx, cy-r, cx, cy+r, level);
@@ -1095,8 +1112,24 @@ static void __not_in_flash_func(ft_eye)(int cx, int cy, int r, uint8_t level) {
     ftD(cx, cy, level);                                    // pupil
 }
 static void __not_in_flash_func(ft_hand)(int cx, int cy, int r, uint8_t level) {
-    ft_square(cx, cy + r/3, r/2, level);                   // palm
-    for (int i=-1;i<=2;i++) ftL(cx + i*r/3, cy - r/3, cx + i*r/3, cy - r, level); // fingers
+    // Open hand / high-five: rounded palm, four fingers on top, a thumb out to the left.
+    int pw = r*3/4;                        // palm half-width
+    int pt = cy - r/4;                     // palm top
+    int pb = cy + r;                       // palm bottom (wrist)
+    // Palm block (outline both sides + bottom).
+    ftL(cx-pw, pt, cx-pw, pb, level); ftL(cx+pw, pt, cx+pw, pb, level);
+    ftL(cx-pw, pb, cx+pw, pb, level);
+    // Four fingers rising from the palm top, evenly spaced, each a little capsule.
+    int ftop = pt - r*3/4;                 // finger tips
+    for (int f = 0; f < 4; f++) {
+        int fx = cx - pw + 2 + f * ((2*pw - 4) / 3);      // even spread, inset from edges
+        ftL(fx, pt, fx, ftop, level);                     // finger side 1
+        ftL(fx+2, pt, fx+2, ftop, level);                 // finger side 2 (width 2)
+        ftL(fx, ftop, fx+2, ftop, level);                 // rounded tip
+    }
+    // Thumb: angled stub off the lower-left of the palm.
+    ftL(cx-pw, cy + r/3, cx-r, cy, level);
+    ftL(cx-r, cy, cx-pw, cy - r/8, level);
 }
 
 // Draw one shape/glyph for (bank,set,slot) centred at (cx,cy), radius r.
@@ -1210,6 +1243,20 @@ static void __not_in_flash_func(screensaver_fourtrig)() {
         }
         // OUT2 pulse on any trigger (Core 0 gates on ast_gate_seq change).
         shared.ast_gate_seq = shared.ast_gate_seq + 1;
+    }
+
+    // Momentary Switch DOWN = held glitch (as in normal boot, where DOWN runs an effect).
+    // Applied to the whole composed frame while held, on top of whatever was stamped.
+    if (shared.sw_position == 2) {
+        switch (phase & 3) {                    // vary the glitch so it churns while held
+            case 0: corrupt_step(); break;
+            case 2: roll_step();    break;
+            default: {                          // snow flecks
+                for (int n = 0; n < GREY_SIZE/6; n++)
+                    grey_buffer[rnd() % GREY_SIZE] = rnd() % GREY_LEVELS;
+                break;
+            }
+        }
     }
 }
 
@@ -2409,7 +2456,7 @@ static const char *ALT_HELP[ALT_COUNT][5] = {
     /* RADAR        */ { "MAIN:AIM PU1:FIRE", "PU2/CV1:PLACE ENEMY", "OUT1:SWEEP", "OUT2:HIT", "" },
     /* LUNAR        */ { "MAIN/CV1:ROTATE", "PU1/DOWN:THRUST", "OUT1:ALT", "OUT2:CRASH", "" },
     /* 3DMAZE       */ { "MAIN:TURN PU1:FWD", "X/CV1:AUTORUN", "PU2:INVERT", "FIND EXIT", "OUT2:EXIT" },
-    /* FOURTRIG     */ { "TRIG:A1 A2 PU1 PU2", "X:BANK Y/CV2:SET", "MAIN/CV1:CHAOS", "ICONS THEN WORDS", "OUT2:TRIG" },
+    /* FOURTRIG     */ { "TRIG:A1 A2 PU1 PU2", "X:BANK Y/CV2:SET", "MAIN/CV1:CHAOS", "DOWN:GLITCH", "OUT2:TRIG" },
 };
 
 // Draw text right-justified so it ends at grey column `gright` (font advance 9 cells/glyph).
