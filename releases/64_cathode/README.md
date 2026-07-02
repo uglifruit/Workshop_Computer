@@ -59,6 +59,20 @@ For displays that only accept **NTSC** (common in the US), flash **`cathode_ray_
 
 ---
 
+## Download & install
+
+Both builds live in this program-card folder in the repository:
+
+- **`cathode_ray.uf2`** — **PAL, 50 Hz (the core/primary build — use this unless you specifically need NTSC).**
+- **`cathode_ray_ntsc.uf2`** — NTSC, ~60 Hz (the alternative build for US / 60 Hz-only displays).
+
+Repository (both `.uf2` files, source and this README):
+**https://github.com/uglifruit/Workshop_Computer/tree/add-64-cathode/releases/64_cathode**
+
+To flash: hold the Workshop Computer's boot button while connecting USB (it mounts as a `RPI-RP2` drive), then drag the chosen `.uf2` onto it. The module reboots into the firmware. To switch standards later, just flash the other `.uf2`.
+
+---
+
 ## Inputs
 
 | Jack | Function |
@@ -77,8 +91,8 @@ For displays that only accept **NTSC** (common in the US), flash **`cathode_ray_
 |------|----------|
 | Pulse Out 1 | Composite video — DAC bit 0 (via 1kΩ). |
 | Pulse Out 2 | Composite video — DAC bit 1 (via 220Ω). |
-| CV Out 1 | Patchteroids pitch (alt boot only) — see Patchteroids below. Unused otherwise. |
-| CV Out 2 | Patchteroids gate (alt boot only) — see Patchteroids below. Unused otherwise. |
+| CV Out 1 | Alt boot only — mode-dependent (Patchteroids pitch / Boing height / Lunar altitude / …). Unused in the main synth. |
+| CV Out 2 | Alt boot only — mode-dependent event pulse (hit / bounce / crash / maze-exit / FourTrig trigger). Unused in the main synth. |
 
 Both pulse outputs are consumed by the video DAC and are not available as normal pulse outputs while this firmware runs.
 
