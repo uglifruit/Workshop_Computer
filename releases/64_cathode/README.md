@@ -237,11 +237,11 @@ A trigger-driven **visual "drum machine"**. All **four inputs are triggers** —
 
 - **SHAPES** — vector shapes: circle/square/triangle/star, psychic-test-card symbols, arrows, weather icons, card suits.
 - **MUSIC / HITS** — abstract sound glyphs (note, lightning bolt, explosion, echo rings, discs, targets).
-- **SYMBOLS** — more figurative icons: faces (happy/flat/sad/shock), check/cross/plus/target, house/eye/hand/star, arrows, and more.
+- **SYMBOLS** — more figurative icons: faces (happy/flat/sad/shock), check/cross/plus/target, house/eye/crescent-moon/star, arrows, and more.
 - **WORDS** — drum/shout words (HAT · CLAP · KICK · SNARE, and four more sets).
 - **EMPHASIS** — punchy text stabs (YEAH! · NOPE · !!! · BANG …).
 
-**Knob Y (+ CV In 2)** picks which **set of four** within the bank (five sets, one per quadrant slot). **Main knob (+ CV In 1) = CHAOS**: at zero, things land tidily near the middle of the screen at a modest uniform size with no glitching. As you turn it up, placement gets **jittered and occasionally swapped between quadrants**, the icons/words **grow larger and their size varies**, and **past ~50%** each hit has a growing chance of **also firing a screen glitch** (corrupt / snow / roll) on top of the stamp. Shapes and words are drawn with thick (2×2) strokes. **Hold Switch DOWN for a momentary held glitch** (as in normal boot). **CV Out 2 pulses on every trigger** so you can chain the visual hits back into your patch.
+**Knob Y (+ CV In 2)** picks which **set of four** within the bank (five sets, one per quadrant slot). **Main knob (+ CV In 1) = CHAOS**: at zero, things land tidily near the middle of the screen at a modest uniform size with no glitching. As you turn it up, placement gets **jittered and occasionally swapped between quadrants**, the icons/words **grow larger and their size varies**, and **past ~50%** each hit has a growing chance of **also firing a random VFX** on top of the stamp — the full performance set (strobe, invert, fade-to-black, fade-to-white, snow, corrupt, roll, and **flip 180°**). Shapes and words are drawn with thick (2×2) strokes. **Hold Switch DOWN for a momentary held VFX** (a random effect from that same set, as in normal boot). **CV Out 2 pulses on every trigger** so you can chain the visual hits back into your patch.
 
 ---
 
@@ -280,7 +280,7 @@ A trigger-driven **visual "drum machine"**. All **four inputs are triggers** —
 - **Spectrum has its own Knob X/Y** (rotate & gain) with pickup hysteresis — independent of the oscilloscope's baseline/gain, and only changing when actually turned.
 - **3DMAZE: find the EXIT** — the roaming monster is replaced by a glowing white **EXIT panel** on a wall; reach it to flash + generate a new maze (CV Out 2 pulses on reaching the exit).
 - **NTSC aesthetic polish** — content nudged in from the top/bottom crop so nothing clips, and a slightly **shorter 3D-maze wall height** (NTSC only) so more of the receding top/bottom diagonals show. PAL is unchanged.
-- **New alt-boot mode: FOURTRIG** — a trigger-driven visual drum machine. Audio In 1/2 and Pulse In 1/2 are all triggers, each stamping a decaying "thing" (thick 2×2 strokes) into its own screen quadrant. Knob X picks the bank (icons first: shapes / music-hits / symbols; then words / emphasis), Knob Y (+CV2) the set, and Main (+CV1) a CHAOS amount that jitters/swaps placement, grows and varies the size, and past ~50% adds a rising chance of a per-hit screen glitch. CV Out 2 pulses on every trigger.
+- **New alt-boot mode: FOURTRIG** — a trigger-driven visual drum machine. Audio In 1/2 and Pulse In 1/2 are all triggers, each stamping a decaying "thing" (thick 2×2 strokes) into its own screen quadrant. Knob X picks the bank (icons first: shapes / music-hits / symbols; then words / emphasis), Knob Y (+CV2) the set, and Main (+CV1) a CHAOS amount that jitters/swaps placement, grows and varies the size, and past ~50% adds a rising chance of a per-hit random VFX (the full set incl. flip-180°). Hold Switch DOWN for a momentary held VFX. CV Out 2 pulses on every trigger.
 - Developer docs added (`CATHODE_DEV.md`, `MODES.md`).
 
 ### v1.1.0

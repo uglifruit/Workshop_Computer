@@ -59,7 +59,8 @@ Notes:
   **Knob Y (+CV In 2)** picks the set of four within the bank; **Main (+CV In 1)** is CHAOS — at
   zero, tidy placement near screen centre at a modest size; turning it up adds position jitter,
   quadrant swapping, and grows/varies the size, and past ~50% a rising chance each hit also fires
-  a screen glitch. **Hold Switch DOWN** for a momentary held glitch (as in normal boot). CV Out 2
-  pulses on every trigger. (Audio triggers fire on a transient/gate crossing ~+0.4 V.)
+  a random VFX from the full performance set (strobe / invert / fade-black / fade-white / snow /
+  corrupt / roll / flip-180°). **Hold Switch DOWN** for a momentary held VFX (a random one of that
+  set). CV Out 2 pulses on every trigger. (Audio triggers fire on a transient/gate crossing ~+0.4 V.)
 
 All alt-boot modes also serve as CRT-friendly screensavers.

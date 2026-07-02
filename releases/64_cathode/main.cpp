@@ -907,23 +907,37 @@ static inline void ftD(int gx, int gy, uint8_t level) {
     plot_dot(gx, gy + 1, level);       // → 2×2
 }
 
+static inline void ft_cell(int gx, int gy, uint8_t level) {   // set one grey cell, clipped
+    if (gx >= 0 && gx < GREY_W && gy >= 0 && gy < GREY_H) GREY_SET(grey_buffer, gy, gx, level);
+}
+
 // Draw a word centred on grey (cx,cy) at `level`, DOUBLED: each 5×7 glyph pixel becomes a
 // 2×2 grey block, so strokes are solid (reach full white) and the word reads larger.
-// Cell = 10 wide (5px×2) + 2 gap = 12 advance; 14 tall (7×2).
+// Vertical strokes get one extra grey column so uprights read a touch bolder (height
+// unchanged). Cell = 10 wide (5px×2) + gap; ADV per glyph = 13 (extra px for the fatter
+// uprights so glyphs don't touch); 14 tall (7×2).
 static void __not_in_flash_func(ft_draw_word)(int cx, int cy, const char *s, uint8_t level) {
     int n = 0; for (const char *p = s; *p; p++) n++;
-    const int ADV = 12;                        // per-glyph advance (10px glyph + 2px gap)
-    int w = n * ADV - 2;                        // last glyph has no trailing gap
+    const int ADV = 13;                        // per-glyph advance (10px glyph + fat gap)
+    int w = n * ADV - 3;                        // last glyph has no trailing gap
     int gx0 = cx - w / 2, gy0 = cy - 7;        // 14 tall → top = cy-7
     int gx = gx0;
     for (; *s; s++) {
         const uint8_t *g = font5x7[font_index(*s)];
         for (int row = 0; row < 7; row++) {
             uint8_t bits = g[row];
+            uint8_t above = (row > 0) ? g[row-1] : 0;
+            uint8_t below = (row < 6) ? g[row+1] : 0;
             for (int col = 0; col < 5; col++) {
-                if (bits & (0x10 >> col)) {
+                uint8_t m = 0x10 >> col;
+                if (bits & m) {
                     int px = gx + col * 2, py = gy0 + row * 2;
                     ftD(px, py, level);        // ftD is 2×2 → doubled pixel
+                    // Vertical-stroke member (lit above or below) → +1 grey column right.
+                    if ((above & m) || (below & m)) {
+                        ft_cell(px + 2, py,     level);
+                        ft_cell(px + 2, py + 1, level);
+                    }
                 }
             }
         }
@@ -1111,25 +1125,29 @@ static void __not_in_flash_func(ft_eye)(int cx, int cy, int r, uint8_t level) {
     ft_circle(cx, cy, r/3, level);                         // iris
     ftD(cx, cy, level);                                    // pupil
 }
-static void __not_in_flash_func(ft_hand)(int cx, int cy, int r, uint8_t level) {
-    // Open hand / high-five: rounded palm, four fingers on top, a thumb out to the left.
-    int pw = r*3/4;                        // palm half-width
-    int pt = cy - r/4;                     // palm top
-    int pb = cy + r;                       // palm bottom (wrist)
-    // Palm block (outline both sides + bottom).
-    ftL(cx-pw, pt, cx-pw, pb, level); ftL(cx+pw, pt, cx+pw, pb, level);
-    ftL(cx-pw, pb, cx+pw, pb, level);
-    // Four fingers rising from the palm top, evenly spaced, each a little capsule.
-    int ftop = pt - r*3/4;                 // finger tips
-    for (int f = 0; f < 4; f++) {
-        int fx = cx - pw + 2 + f * ((2*pw - 4) / 3);      // even spread, inset from edges
-        ftL(fx, pt, fx, ftop, level);                     // finger side 1
-        ftL(fx+2, pt, fx+2, ftop, level);                 // finger side 2 (width 2)
-        ftL(fx, ftop, fx+2, ftop, level);                 // rounded tip
+static void __not_in_flash_func(ft_moon)(int cx, int cy, int r, uint8_t level) {
+    // Crescent moon: the outer circle's left-facing arc, plus an inner arc (a circle offset
+    // to the right) that carves the concave edge. Both arcs run from the top tip to bottom
+    // tip, so they meet and read as a crescent opening to the right.
+    int ir  = r*3/4;               // inner circle radius
+    int iox = r/2;                 // inner circle x-offset (to the right)
+    // Outer arc: left half of the circle (angles 64..192 = bottom→left→top in this table).
+    for (int a = 64; a <= 192; a += 6) {
+        uint8_t a0 = (uint8_t)a, a1 = (uint8_t)(a + 6);
+        int x0 = cx + (r*cos_a(a0)>>8), y0 = cy + (r*sin_a(a0)>>8);
+        int x1 = cx + (r*cos_a(a1)>>8), y1 = cy + (r*sin_a(a1)>>8);
+        ftL(x0, y0, x1, y1, level);
     }
-    // Thumb: angled stub off the lower-left of the palm.
-    ftL(cx-pw, cy + r/3, cx-r, cy, level);
-    ftL(cx-r, cy, cx-pw, cy - r/8, level);
+    // Inner arc: left half of the offset circle (the concave bite).
+    for (int a = 64; a <= 192; a += 6) {
+        uint8_t a0 = (uint8_t)a, a1 = (uint8_t)(a + 6);
+        int x0 = cx+iox + (ir*cos_a(a0)>>8), y0 = cy + (ir*sin_a(a0)>>8);
+        int x1 = cx+iox + (ir*cos_a(a1)>>8), y1 = cy + (ir*sin_a(a1)>>8);
+        ftL(x0, y0, x1, y1, level);
+    }
+    // Close the two tips so the crescent is a continuous outline.
+    ftL(cx, cy+r, cx+iox, cy+ir, level);   // bottom tip
+    ftL(cx, cy-r, cx+iox, cy-ir, level);   // top tip
 }
 
 // Draw one shape/glyph for (bank,set,slot) centred at (cx,cy), radius r.
@@ -1159,9 +1177,41 @@ static void __not_in_flash_func(ft_draw_shape)(int bank, int set, int slot,
     switch (set) {
         case 0: ft_face(cx,cy,r, slot, level); break;        // 4 moods
         case 1: (slot==0?ft_check:slot==1?ft_x:slot==2?ft_plus:ft_target)(cx,cy,r,level); break;
-        case 2: (slot==0?ft_house:slot==1?ft_eye:slot==2?ft_hand:ft_star)(cx,cy,r,level); break;
+        case 2: (slot==0?ft_house:slot==1?ft_eye:slot==2?ft_moon:ft_star)(cx,cy,r,level); break;
         case 3: ft_arrow(cx,cy,r, slot, level); break;       // reuse arrows (diagonal feel via jitter)
         default:(slot==0?ft_bolt2:slot==1?ft_sun:slot==2?ft_snow:ft_diamond)(cx,cy,r,level); break;
+    }
+}
+
+// Flip the whole grey buffer 180° (upside-down + mirrored) in place — used as FourTrig's
+// SWAP effect. In-place reversal fits the buffer exactly (unlike a 90° turn, which would
+// have to squash the non-square framebuffer). One frame's flip is enough; repeated calls
+// just toggle it back and forth (a churn while held).
+static void __not_in_flash_func(ft_flip180)() {
+    for (int i = 0, j = GREY_SIZE - 1; i < j; i++, j--) {
+        uint8_t t = grey_buffer[i]; grey_buffer[i] = grey_buffer[j]; grey_buffer[j] = t;
+    }
+}
+
+// FourTrig "glitch" = one of the full VFX set (like normal-boot RANDOM FX), NOT just the
+// corrupt/roll/snow subset. Runs effect `fx` for the current frame. Sets *inv for a
+// whole-frame invert (STROBE / INVERT). SWAP here means flip 180° (see ft_flip180).
+enum { FTFX_STROBE, FTFX_INVERT, FTFX_FADE_BLACK, FTFX_FADE_WHITE, FTFX_SNOW,
+       FTFX_CORRUPT, FTFX_ROLL, FTFX_SWAP, FTFX_COUNT };
+static void __not_in_flash_func(ft_run_vfx)(int fx, uint32_t ph, bool *inv) {
+    switch (fx) {
+        case FTFX_STROBE:     *inv = (ph & 2); break;                 // rapid flash
+        case FTFX_INVERT:     *inv = true; break;                     // held invert
+        case FTFX_FADE_BLACK: if ((ph & 3) == 0) fade_step();  break; // fade to black
+        case FTFX_FADE_WHITE: if ((ph & 3) == 0) bloom_step(); break; // bloom to white
+        case FTFX_SNOW: {
+            for (int i = 0; i < GREY_SIZE; i++)
+                grey_buffer[i] = (uint8_t)(lcg_rand() % GREY_LEVELS);
+            break;
+        }
+        case FTFX_CORRUPT:    corrupt_step(); break;
+        case FTFX_ROLL:       roll_step();    break;
+        case FTFX_SWAP:       if ((ph & 7) == 0) ft_flip180(); break; // flip 180° periodically
     }
 }
 
@@ -1226,38 +1276,33 @@ static void __not_in_flash_func(screensaver_fourtrig)() {
         else if (bank == FT_BANK_EMPH)  ft_draw_word(cx, cy, FT_EMPH[ysel][i],  white);
         else                            ft_draw_shape(bank, ysel, i, cx, cy, r, white);
 
-        // Past ~50% chaos, a stamp can ALSO fire a screen glitch (chance rises to ~50%).
+        // Past ~50% chaos, a stamp can ALSO fire a random VFX (one of the full set, like
+        // normal-boot RANDOM FX). Chance rises to ~50% at max chaos.
         if (chaos > 50) {
             int gp = (chaos - 50);                                 // 0..50
             if (rnd() % 100 < gp) {
-                switch (rnd() % 3) {
-                    case 0: corrupt_step(); break;
-                    case 1: {                                       // snow flecks
-                        for (int n = 0; n < GREY_SIZE/8; n++)
-                            grey_buffer[rnd() % GREY_SIZE] = rnd() % GREY_LEVELS;
-                        break;
-                    }
-                    default: roll_step(); break;
-                }
+                bool inv = false;
+                // phase 0 → the phase-gated effects (fade/flip) fire on this one-shot hit.
+                ft_run_vfx(rnd() % FTFX_COUNT, 0, &inv);
+                if (inv) effect_invert = true;
             }
         }
         // OUT2 pulse on any trigger (Core 0 gates on ast_gate_seq change).
         shared.ast_gate_seq = shared.ast_gate_seq + 1;
     }
 
-    // Momentary Switch DOWN = held glitch (as in normal boot, where DOWN runs an effect).
-    // Applied to the whole composed frame while held, on top of whatever was stamped.
-    if (shared.sw_position == 2) {
-        switch (phase & 3) {                    // vary the glitch so it churns while held
-            case 0: corrupt_step(); break;
-            case 2: roll_step();    break;
-            default: {                          // snow flecks
-                for (int n = 0; n < GREY_SIZE/6; n++)
-                    grey_buffer[rnd() % GREY_SIZE] = rnd() % GREY_LEVELS;
-                break;
-            }
-        }
+    // Momentary Switch DOWN = held VFX (as in normal boot, where DOWN runs an effect).
+    // Picks one random effect from the full set on press and holds/churns it while down.
+    static bool ft_down_prev = false;
+    static int  ft_down_fx   = 0;
+    bool ft_down = (shared.sw_position == 2);
+    if (ft_down && !ft_down_prev) ft_down_fx = rnd() % FTFX_COUNT;   // re-roll on each press
+    if (ft_down) {
+        bool inv = false;
+        ft_run_vfx(ft_down_fx, phase, &inv);
+        if (inv) effect_invert = true;
     }
+    ft_down_prev = ft_down;
 }
 
 static void __not_in_flash_func(screensaver_asteroids)() {
