@@ -180,6 +180,9 @@ struct SharedState {
     volatile bool     pu1_rising;    // Pulse In 1 rising edge (latch)
     volatile bool     pu2_held;      // Pulse In 2 currently high
     volatile bool     pu2_rising;    // Pulse In 2 rising edge (latch)
+    // Audio inputs as triggers (FourTrig alt-mode): edge-detect a rising level crossing.
+    volatile bool     ain1_rising;   // Audio In 1 crossed the trigger threshold (latch)
+    volatile bool     ain2_rising;   // Audio In 2 crossed the trigger threshold (latch)
     // Config (set in menu; RAM-only). Three independent triggers. Defaults reproduce
     // original firmware (DOWN cycles effects, PU2 inverts).
     volatile uint8_t  cfg_sw;        // Behaviour for switch-DOWN (Main knob; def CYCLE FX)
@@ -861,6 +864,283 @@ static const int16_t sin256[256] = {
   -86,-80,-74,-68,-62,-56,-50,-44,-38,-31,-25,-19,-13,-6 };
 static inline int sin_a(uint8_t a){ return sin256[a]; }
 static inline int cos_a(uint8_t a){ return sin256[(uint8_t)(a + 64)]; }
+
+// ── FOURTRIG: four trigger inputs stamp a "thing" into their screen quadrant ─────────
+// AudioIn1, AudioIn2, PulseIn1, PulseIn2 are all trigger inputs. Each fires a stamp into
+// its own quadrant (approx centre). Stamps decay through the 5 greys to black over ~10
+// frames (the whole buffer is faded one level every other frame). Knob X = bank (5),
+// Knob Y (+CV2) = set within the bank (5 sets of 4), Main (+CV1) = CHAOS.
+//   Bank 0 = WORDS, Bank 1 = SHAPES, Bank 2 = MUSIC/HIT glyphs, Bank 3 = EMPHASIS,
+//   Bank 4 = a mixed grab-bag.
+// CHAOS 0 → tidy quadrant centres, uniform size, no glitch. Rising chaos → position
+// jitter + occasional quadrant swap, size randomness, and (past ~50%) a growing chance
+// that a stamp ALSO fires a screen glitch (corrupt / snow-fleck / roll kick).
+#define FT_BANKS 5
+#define FT_SETS  5
+
+// Word banks: bank 0 (WORDS) has 5 sets × 4 words. (Other word-ish content lives in the
+// EMPHASIS bank.) These are drum/shout style hits, one per trigger quadrant.
+static const char *const FT_WORDS[FT_SETS][4] = {
+    { "HAT",  "CLAP", "KICK", "SNARE"    },
+    { "TSH",  "CHCK", "BOOOM","CRACK"    },
+    { "WOW",  "YES",  "BOOM", "NO"       },
+    { "LOVE", "SEX",  "HATE", "RELIGION" },
+    { "EVERY","BODY", "SAY",  "YEAH"     },
+};
+
+// Bank 3 (EMPHASIS) — short punchy text stabs (drawn as words/marks).
+static const char *const FT_EMPH[FT_SETS][4] = {
+    { "YEAH!", "NOPE", "OW",   "HUH?"   },
+    { "!!!",   "???",  "***",  "###"    },
+    { "STOP",  "GO",   "WAIT", "NOW"    },
+    { "UH",    "OH",   "AH",   "EH"     },
+    { "BANG",  "POW",  "ZAP",  "WHAM"   },
+};
+
+// Bank 4 (MIXED) — a grab-bag: onomatopoeia + counts, one set per Y zone.
+static const char *const FT_MIXED[FT_SETS][4] = {
+    { "ONE",  "TWO",  "3",    "FOUR"   },
+    { "TICK", "TOCK", "DING", "DONG"   },
+    { "N",    "S",    "E",    "W"       },
+    { "A",    "B",    "C",    "D"       },
+    { "RED",  "GRN",  "BLU",  "YEL"    },
+};
+
+// Draw a word centred on grey (cx,cy) at `level` (uses the 9-cell glyph advance, 7 tall).
+static void __not_in_flash_func(ft_draw_word)(int cx, int cy, const char *s, uint8_t level) {
+    int n = 0; for (const char *p = s; *p; p++) n++;
+    int w = n * 9 - 4;                 // last glyph has no trailing gap
+    draw_text(cx - w / 2, cy - 3, s, level);
+}
+
+// ── Vector shape stamps (bank 1 SHAPES, bank 2 MUSIC/HIT) ────────────────────────────
+// All draw centred on grey (cx,cy) with radius r, into grey_buffer at `level`.
+static void __not_in_flash_func(ft_circle)(int cx, int cy, int r, uint8_t level) {
+    for (int a = 0; a < 256; a += 8) {             // 32 segments over the full 256-step circle
+        int x0 = cx + (r * cos_a((uint8_t)a)      >> 8), y0 = cy + (r * sin_a((uint8_t)a)      >> 8);
+        int x1 = cx + (r * cos_a((uint8_t)(a + 8)) >> 8), y1 = cy + (r * sin_a((uint8_t)(a + 8)) >> 8);
+        draw_line(x0, y0, x1, y1, level);
+    }
+}
+static void __not_in_flash_func(ft_square)(int cx, int cy, int r, uint8_t level) {
+    draw_line(cx-r, cy-r, cx+r, cy-r, level); draw_line(cx+r, cy-r, cx+r, cy+r, level);
+    draw_line(cx+r, cy+r, cx-r, cy+r, level); draw_line(cx-r, cy+r, cx-r, cy-r, level);
+}
+static void __not_in_flash_func(ft_triangle)(int cx, int cy, int r, uint8_t level) {
+    draw_line(cx, cy-r, cx+r, cy+r, level); draw_line(cx+r, cy+r, cx-r, cy+r, level);
+    draw_line(cx-r, cy+r, cx, cy-r, level);
+}
+static void __not_in_flash_func(ft_star)(int cx, int cy, int r, uint8_t level) {
+    // 5-point star via the classic {0,2,4,1,3} vertex skip.
+    int px[5], py[5];
+    for (int i = 0; i < 5; i++) {
+        uint8_t a = (uint8_t)(192 + i * 256 / 5);          // start pointing up
+        px[i] = cx + (r * cos_a(a) >> 8); py[i] = cy + (r * sin_a(a) >> 8);
+    }
+    int order[6] = {0,2,4,1,3,0};
+    for (int i = 0; i < 5; i++)
+        draw_line(px[order[i]], py[order[i]], px[order[i+1]], py[order[i+1]], level);
+}
+static void __not_in_flash_func(ft_wavy)(int cx, int cy, int r, uint8_t level) {
+    for (int row = -1; row <= 1; row++) {                   // three wavy lines
+        int y = cy + row * (r/2);
+        for (int x = -r; x < r; x++) {
+            int yy = y + (sin_a((uint8_t)((x + r) * 8)) >> 6);
+            plot_dot(cx + x, yy, level);
+        }
+    }
+}
+static void __not_in_flash_func(ft_cross)(int cx, int cy, int r, uint8_t level) {
+    draw_line(cx-r, cy, cx+r, cy, level); draw_line(cx, cy-r, cx, cy+r, level);
+}
+static void __not_in_flash_func(ft_ninedots)(int cx, int cy, int r, uint8_t level) {
+    for (int j = -1; j <= 1; j++)
+        for (int i = -1; i <= 1; i++) {
+            // 2×2 dot per point so it reads as a dot, not a single sub-pixel.
+            plot_dot(cx + i*r/2,     cy + j*r/2, level);
+            plot_dot(cx + i*r/2 + 1, cy + j*r/2, level);
+        }
+}
+static void __not_in_flash_func(ft_hash)(int cx, int cy, int r, uint8_t level) {
+    draw_line(cx-r, cy-r/2, cx+r, cy-r/2, level); draw_line(cx-r, cy+r/2, cx+r, cy+r/2, level);
+    draw_line(cx-r/2, cy-r, cx-r/2, cy+r, level); draw_line(cx+r/2, cy-r, cx+r/2, cy+r, level);
+}
+// Arrow pointing in direction dir (0=left,1=right,2=up,3=down).
+static void __not_in_flash_func(ft_arrow)(int cx, int cy, int r, int dir, uint8_t level) {
+    int dx = (dir==0)?-1:(dir==1)?1:0, dy = (dir==2)?-1:(dir==3)?1:0;
+    int tx = cx + dx*r, ty = cy + dy*r, bx = cx - dx*r, by = cy - dy*r;
+    draw_line(bx, by, tx, ty, level);
+    // two barbs: rotate the shaft dir by ±90° for the head
+    int px = -dy, py = dx;                                  // perpendicular
+    draw_line(tx, ty, tx - dx*r/2 + px*r/2, ty - dy*r/2 + py*r/2, level);
+    draw_line(tx, ty, tx - dx*r/2 - px*r/2, ty - dy*r/2 - py*r/2, level);
+}
+static void __not_in_flash_func(ft_sun)(int cx, int cy, int r, uint8_t level) {
+    ft_circle(cx, cy, r/2, level);
+    for (int a = 0; a < 256; a += 32) {                     // 8 rays around the full circle
+        uint8_t aa = (uint8_t)a;
+        int x0 = cx + (r*3/4 * cos_a(aa) >> 8), y0 = cy + (r*3/4 * sin_a(aa) >> 8);
+        int x1 = cx + (r     * cos_a(aa) >> 8), y1 = cy + (r     * sin_a(aa) >> 8);
+        draw_line(x0, y0, x1, y1, level);
+    }
+}
+static void __not_in_flash_func(ft_cloud)(int cx, int cy, int r, uint8_t level) {
+    ft_circle(cx - r/2, cy, r/2, level); ft_circle(cx + r/2, cy, r/2, level);
+    ft_circle(cx, cy - r/3, r/2, level);
+    draw_line(cx-r, cy+r/3, cx+r, cy+r/3, level);
+}
+static void __not_in_flash_func(ft_rain)(int cx, int cy, int r, uint8_t level) {
+    ft_cloud(cx, cy - r/2, r, level);
+    for (int i = -1; i <= 1; i++) draw_line(cx+i*r/2, cy+r/3, cx+i*r/2-2, cy+r, level);
+}
+static void __not_in_flash_func(ft_snow)(int cx, int cy, int r, uint8_t level) {
+    for (int a = 0; a < 256; a += 42) {                     // 6-arm flake (256/6 ≈ 42)
+        uint8_t aa = (uint8_t)a;
+        int x1 = cx + (r * cos_a(aa) >> 8), y1 = cy + (r * sin_a(aa) >> 8);
+        draw_line(cx, cy, x1, y1, level);
+    }
+}
+static void __not_in_flash_func(ft_heart)(int cx, int cy, int r, uint8_t level) {
+    ft_circle(cx - r/2, cy - r/3, r/2, level); ft_circle(cx + r/2, cy - r/3, r/2, level);
+    draw_line(cx-r, cy, cx, cy+r, level); draw_line(cx+r, cy, cx, cy+r, level);
+}
+static void __not_in_flash_func(ft_spade)(int cx, int cy, int r, uint8_t level) {
+    ft_triangle(cx, cy - r/3, r, level);                   // body
+    draw_line(cx, cy+r/3, cx, cy+r, level);                // stem
+    ft_circle(cx - r/3, cy + r/4, r/3, level); ft_circle(cx + r/3, cy + r/4, r/3, level);
+}
+static void __not_in_flash_func(ft_club)(int cx, int cy, int r, uint8_t level) {
+    ft_circle(cx, cy - r/2, r/2, level);
+    ft_circle(cx - r/2, cy + r/6, r/2, level); ft_circle(cx + r/2, cy + r/6, r/2, level);
+    draw_line(cx, cy, cx, cy+r, level);
+}
+static void __not_in_flash_func(ft_diamond)(int cx, int cy, int r, uint8_t level) {
+    draw_line(cx, cy-r, cx+r, cy, level); draw_line(cx+r, cy, cx, cy+r, level);
+    draw_line(cx, cy+r, cx-r, cy, level); draw_line(cx-r, cy, cx, cy-r, level);
+}
+static void __not_in_flash_func(ft_note)(int cx, int cy, int r, uint8_t level) {
+    ft_circle(cx - r/2, cy + r/2, r/3, level);             // note head
+    draw_line(cx - r/6, cy + r/2, cx - r/6, cy - r, level);// stem
+    draw_line(cx - r/6, cy - r, cx + r/2, cy - r + r/3, level); // flag
+}
+static void __not_in_flash_func(ft_bolt)(int cx, int cy, int r, uint8_t level) {
+    draw_line(cx+r/2, cy-r, cx-r/3, cy, level); draw_line(cx-r/3, cy, cx+r/4, cy, level);
+    draw_line(cx+r/4, cy, cx-r/2, cy+r, level);
+}
+static void __not_in_flash_func(ft_burst)(int cx, int cy, int r, uint8_t level) {
+    // 16 spikes around the full circle: radius alternates long/short each segment.
+    int prevx = 0, prevy = 0;
+    for (int i = 0; i <= 16; i++) {
+        uint8_t a = (uint8_t)(i * 16);
+        int rr = (i & 1) ? r : r/2;
+        int x = cx + (rr * cos_a(a) >> 8), y = cy + (rr * sin_a(a) >> 8);
+        if (i) draw_line(prevx, prevy, x, y, level);
+        prevx = x; prevy = y;
+    }
+}
+static void __not_in_flash_func(ft_rings)(int cx, int cy, int r, uint8_t level) {
+    ft_circle(cx, cy, r, level); ft_circle(cx, cy, r*2/3, level); ft_circle(cx, cy, r/3, level);
+}
+
+// Draw one shape/glyph for (bank,set,slot) centred at (cx,cy), radius r.
+static void __not_in_flash_func(ft_draw_shape)(int bank, int set, int slot,
+                                               int cx, int cy, int r, uint8_t level) {
+    // Bank 1 = SHAPES: set selects the row, slot the shape.
+    if (bank == 1) {
+        switch (set) {
+            case 0: (slot==0?ft_circle:slot==1?ft_square:slot==2?ft_triangle:ft_star)(cx,cy,r,level); break;
+            case 1: (slot==0?ft_wavy:slot==1?ft_cross:slot==2?ft_ninedots:ft_hash)(cx,cy,r,level); break;
+            case 2: ft_arrow(cx,cy,r, slot, level); break;   // slot 0=L 1=R 2=U 3=D
+            case 3: (slot==0?ft_sun:slot==1?ft_rain:slot==2?ft_cloud:ft_snow)(cx,cy,r,level); break;
+            default:(slot==0?ft_heart:slot==1?ft_spade:slot==2?ft_club:ft_diamond)(cx,cy,r,level); break;
+        }
+        return;
+    }
+    // Bank 2 = MUSIC/HIT: abstract sound glyphs. 5 sets rotate through the primitives.
+    switch ((set + slot) % 5) {
+        case 0: ft_note(cx,cy,r,level);  break;
+        case 1: ft_bolt(cx,cy,r,level);  break;
+        case 2: ft_burst(cx,cy,r,level); break;
+        case 3: ft_rings(cx,cy,r,level); break;
+        default: ft_circle(cx,cy,r,level); break;
+    }
+}
+
+static void __not_in_flash_func(screensaver_fourtrig)() {
+    auto rnd = [](){ return (int)(lcg_rand() & 0x7fffffff); };
+    dilate_cap = 2;
+
+    // Fade the whole buffer toward black one level every other frame (~10-frame trail).
+    static uint8_t phase = 0;
+    phase++;
+    if (phase & 1) {
+        for (int i = 0; i < GREY_SIZE; i++) if (grey_buffer[i]) grey_buffer[i]--;
+    }
+
+    // Controls: raw alt-mode knobs read here, with CV folded in (Core 0 leaves them raw for
+    // this hybrid). knob_x/y are 0..4095; cv_x/cv_y are ±2048 — clamp after summing.
+    int bank = clamp(shared.knob_x * FT_BANKS / 4096, 0, FT_BANKS - 1);      // X → bank
+    int ysel = clamp((shared.knob_y + shared.cv_y) * FT_SETS / 4096, 0, FT_SETS - 1); // Y+CV2 → set
+    int chaos = clamp((shared.knob_main + shared.cv_x) * 100 / 4096, 0, 100);// Main+CV1 → chaos %
+
+    // Read-and-clear the four trigger latches (Core 0 sets the rising edges).
+    bool trig[4];
+    trig[0] = shared.ain1_rising; shared.ain1_rising = false;   // Audio In 1 → quadrant 0 (TL)
+    trig[1] = shared.ain2_rising; shared.ain2_rising = false;   // Audio In 2 → quadrant 1 (TR)
+    trig[2] = shared.pu1_rising;  shared.pu1_rising  = false;   // Pulse In 1 → quadrant 2 (BL)
+    trig[3] = shared.pu2_rising;  shared.pu2_rising  = false;   // Pulse In 2 → quadrant 3 (BR)
+
+    // Quadrant centres (TL, TR, BL, BR).
+    const int qx[4] = { GREY_W/4, GREY_W*3/4, GREY_W/4, GREY_W*3/4 };
+    const int qy[4] = { GREY_H/4, GREY_H/4,   GREY_H*3/4, GREY_H*3/4 };
+
+    for (int i = 0; i < 4; i++) {
+        if (!trig[i]) continue;
+
+        // CHAOS: which quadrant actually gets drawn (swap chance rises with chaos).
+        int q = i;
+        if (chaos > 0 && rnd() % 100 < chaos / 2) q = rnd() & 3;   // up to 50% swap at max
+
+        int cx = qx[q], cy = qy[q];
+        // Position jitter grows with chaos (±up to ~a quarter-quadrant at max).
+        if (chaos > 0) {
+            int j = chaos * GREY_W / 400;                          // 0..~45 px at chaos 100
+            cx += (rnd() % (2*j + 1)) - j;
+            cy += (rnd() % (2*j + 1)) - j;
+        }
+        cx = clamp(cx, 12, GREY_W - 12);
+        cy = clamp(cy, 8,  GREY_H - 8);
+
+        // Size: base radius with chaos-driven randomness.
+        int r = 12 + (chaos ? (rnd() % (chaos / 6 + 1)) - chaos/12 : 0);
+        if (r < 6)  r = 6;
+        if (r > 22) r = 22;
+
+        const uint8_t white = GREY_LEVELS - 1;
+        if (bank == 0)        ft_draw_word(cx, cy, FT_WORDS[ysel][i], white);
+        else if (bank == 3)   ft_draw_word(cx, cy, FT_EMPH[ysel][i],  white);
+        else if (bank == 4)   ft_draw_word(cx, cy, FT_MIXED[ysel][i], white);
+        else                  ft_draw_shape(bank, ysel, i, cx, cy, r, white);
+
+        // Past ~50% chaos, a stamp can ALSO fire a screen glitch (chance rises to ~50%).
+        if (chaos > 50) {
+            int gp = (chaos - 50);                                 // 0..50
+            if (rnd() % 100 < gp) {
+                switch (rnd() % 3) {
+                    case 0: corrupt_step(); break;
+                    case 1: {                                       // snow flecks
+                        for (int n = 0; n < GREY_SIZE/8; n++)
+                            grey_buffer[rnd() % GREY_SIZE] = rnd() % GREY_LEVELS;
+                        break;
+                    }
+                    default: roll_step(); break;
+                }
+            }
+        }
+        // OUT2 pulse on any trigger (Core 0 gates on ast_gate_seq change).
+        shared.ast_gate_seq = shared.ast_gate_seq + 1;
+    }
+}
 
 static void __not_in_flash_func(screensaver_asteroids)() {
     struct Comet  { int32_t x, y, vx, vy; uint8_t active; uint8_t gen; }; // gen 0=parent,1=child
@@ -2042,7 +2322,7 @@ static void __not_in_flash_func(screensaver_maze)() {
 // modes. Top line = mode name (left) + "n/N" position (right); below it is the per-mode
 // help (inputs/outputs). Switch MID/DOWN plays the shown mode. Add a hybrid: add a name
 // here, its help lines below, and a case in the alt_mode dispatch (update_framebuffer).
-static const char *ALT_NAMES[] = { "COMET", "PATCHTEROIDS", "BOING", "STARFIELD", "RADAR", "LUNAR", "3DMAZE" };
+static const char *ALT_NAMES[] = { "COMET", "PATCHTEROIDS", "BOING", "STARFIELD", "RADAR", "LUNAR", "3DMAZE", "FOURTRIG" };
 #define ALT_COUNT ((int)(sizeof(ALT_NAMES)/sizeof(ALT_NAMES[0])))
 #define ALT_HYBRID_PATCH 1   // index of PATCHTEROIDS (its CV bridge is special on Core 0)
 #define ALT_DEFAULT 0        // mode used if you boot straight to MID/DOWN (COMET)
@@ -2057,6 +2337,7 @@ static const char *ALT_HELP[ALT_COUNT][5] = {
     /* RADAR        */ { "MAIN:AIM PU1:FIRE", "PU2/CV1:PLACE ENEMY", "OUT1:SWEEP", "OUT2:HIT", "" },
     /* LUNAR        */ { "MAIN/CV1:ROTATE", "PU1/DOWN:THRUST", "OUT1:ALT", "OUT2:CRASH", "" },
     /* 3DMAZE       */ { "MAIN:TURN PU1:FWD", "X/CV1:AUTORUN", "PU2:INVERT", "FIND EXIT", "OUT2:EXIT" },
+    /* FOURTRIG     */ { "IN:A1 A2 PU1 PU2", "X:BANK Y/CV2:SET", "MAIN/CV1:CHAOS", "4 TRIGS 4 QUADS", "OUT2:TRIG" },
 };
 
 // Draw text right-justified so it ends at grey column `gright` (font advance 9 cells/glyph).
@@ -2243,6 +2524,7 @@ static void __not_in_flash_func(update_framebuffer)() {
                 case 4:  screensaver_radar();     break;   // RADAR (radar shooter)
                 case 5:  screensaver_lunar();     break;   // LUNAR (lunar lander)
                 case 6:  screensaver_maze();      break;   // 3DMAZE (first-person maze)
+                case 7:  screensaver_fourtrig();  break;   // FOURTRIG (four trigger stamps)
                 default: screensaver_bounce();    break;   // 0 = COMET
             }
         }
@@ -2561,6 +2843,18 @@ public:
         // Pulse In 2 as a trigger source: publish held level + latch the rising edge.
         shared.pu2_held = PulseIn2();
         if (PulseIn2RisingEdge()) shared.pu2_rising = true;
+
+        // Audio In 1/2 as trigger inputs (FourTrig). Edge-detect a rising crossing of
+        // +AIN_HI with hysteresis: fire once when it rises past AIN_HI, re-arm only after
+        // it falls back below AIN_LO. Works for audio/percussive transients and gates.
+        #define AIN_HI 500
+        #define AIN_LO 150
+        static bool ain1_armed = true, ain2_armed = true;
+        int32_t a1 = AudioIn1(), a2 = AudioIn2();
+        if (ain1_armed && a1 > AIN_HI) { shared.ain1_rising = true; ain1_armed = false; }
+        else if (!ain1_armed && a1 < AIN_LO) ain1_armed = true;
+        if (ain2_armed && a2 > AIN_HI) { shared.ain2_rising = true; ain2_armed = false; }
+        else if (!ain2_armed && a2 < AIN_LO) ain2_armed = true;
 
         Switch sw = SwitchVal();
         if      (sw == Switch::Up)     shared.sw_position = 0;

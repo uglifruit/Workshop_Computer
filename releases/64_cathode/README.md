@@ -205,6 +205,7 @@ Boot straight into MID/DOWN (without visiting the selector) and you get **COMET*
 | 5 | **RADAR** | A radar scope (see below). |
 | 6 | **LUNAR** | Lunar Lander (see below). |
 | 7 | **3DMAZE** | First-person wireframe maze — find the exit (see below). |
+| 8 | **FOURTRIG** | Four trigger inputs stamp decaying "things" into four screen quadrants (see below). |
 
 Each mode shows its own control map on the selector page, so you don't need to memorise them. Highlights of the interactive ones:
 
@@ -227,6 +228,20 @@ Classic Lunar Lander. **Main / CV In 1 rotate** the craft; **PU1 / Switch DOWN t
 ### 3D Maze
 
 A chunky first-person **wireframe maze** (ZX81 3D Monster Maze style). **Main knob turns** (smoothly), **PU1 / Switch DOWN walks** forward; movement is rail-locked to corridor centres. Somewhere in the maze a **glowing white EXIT panel** sits on a wall — **find it**: reaching it flashes the screen and generates a fresh maze. Turn **Knob X up (or patch CV In 1)** for a hands-free **auto-run** that drives itself through the maze, turning only where it must. **Hold Pulse In 2** to invert the screen (white-on-black) — a momentary performative accent. **CV Out 2 pulses when you reach the exit.**
+
+### FourTrig
+
+A trigger-driven **visual "drum machine"**. All **four inputs are triggers** — **Audio In 1, Audio In 2, Pulse In 1 and Pulse In 2** — and each owns one screen quadrant (Audio 1 = top-left, Audio 2 = top-right, PU1 = bottom-left, PU2 = bottom-right). On a trigger, that quadrant gets a "thing" **stamped** in near its centre, which then **decays through the five greys to black**. Audio inputs fire on a rising transient/gate (crossing roughly +0.4 V), so kicks, claps and gates all work; pulses fire on their edge.
+
+**Knob X selects the bank** of things:
+
+- **WORDS** — drum/shout words (HAT · CLAP · KICK · SNARE, and four more sets).
+- **SHAPES** — vector shapes: circle/square/triangle/star, psychic-test-card symbols, arrows, weather icons, card suits.
+- **MUSIC / HITS** — abstract sound glyphs (note, lightning bolt, explosion, echo rings).
+- **EMPHASIS** — punchy text stabs (YEAH! · NOPE · !!! · BANG …).
+- **MIXED** — a grab-bag (counts, tick/tock, compass points …).
+
+**Knob Y (+ CV In 2)** picks which **set of four** within the bank (five sets, one per quadrant slot). **Main knob (+ CV In 1) = CHAOS**: at zero, things land tidily in their quadrant centres at a uniform size with no glitching. As you turn it up, placement gets **jittered and occasionally swapped between quadrants**, **size** starts to vary, and **past ~50%** each hit has a growing chance of **also firing a screen glitch** (corrupt / snow / roll) on top of the stamp. **CV Out 2 pulses on every trigger** so you can chain the visual hits back into your patch.
 
 ---
 
@@ -265,6 +280,7 @@ A chunky first-person **wireframe maze** (ZX81 3D Monster Maze style). **Main kn
 - **Spectrum has its own Knob X/Y** (rotate & gain) with pickup hysteresis — independent of the oscilloscope's baseline/gain, and only changing when actually turned.
 - **3DMAZE: find the EXIT** — the roaming monster is replaced by a glowing white **EXIT panel** on a wall; reach it to flash + generate a new maze (CV Out 2 pulses on reaching the exit).
 - **NTSC aesthetic polish** — content nudged in from the top/bottom crop so nothing clips, and a slightly **shorter 3D-maze wall height** (NTSC only) so more of the receding top/bottom diagonals show. PAL is unchanged.
+- **New alt-boot mode: FOURTRIG** — a trigger-driven visual drum machine. Audio In 1/2 and Pulse In 1/2 are all triggers, each stamping a decaying "thing" into its own screen quadrant. Knob X picks the bank (words / shapes / music-hits / emphasis / mixed), Knob Y (+CV2) the set, and Main (+CV1) a CHAOS amount that jitters/swaps placement, varies size, and past ~50% adds a rising chance of a per-hit screen glitch. CV Out 2 pulses on every trigger.
 - Developer docs added (`CATHODE_DEV.md`, `MODES.md`).
 
 ### v1.1.0
