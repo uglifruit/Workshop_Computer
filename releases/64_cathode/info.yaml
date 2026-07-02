@@ -87,11 +87,11 @@ controls:
     - name: Etch-a-sketch
       activation: Main knob in the lower third (CCW); knob sets fade rate
       main: Fade rate (0.15s–2s)
-      x: CV In 1 scale (UP) or X position offset (MIDDLE)
-      y: CV In 2 scale (UP) or Y position offset (MIDDLE)
+      x: CV In 1 scale (MIDDLE) or X position offset (UP)
+      y: CV In 2 scale (MIDDLE) or Y position offset (UP)
       switch:
-        up: Knob X/Y scale the CV inputs
-        middle: Knob X/Y offset the drawing position
+        up: Knob X/Y offset the drawing position (drawings accumulate)
+        middle: Knob X/Y scale the CV inputs (+ phosphor fade)
         down: Performance trigger / config menu
     - name: Oscilloscope
       activation: Main knob in the middle third
@@ -99,19 +99,19 @@ controls:
       x: Centre-line (0V) vertical position
       y: Audio trace gain (0–2×)
       switch:
-        up: Phosphor fade locked to the sweep
-        middle: Static single clean trace
+        up: Static single clean trace
+        middle: Phosphor fade locked to the sweep
         down: Performance trigger / config menu
     - name: Spectrum analyser
-      activation: Main knob in the upper third (CW)
-      main: (selects the mode)
-      x: (unused)
-      y: Audio gain (0–2×)
+      activation: Main knob in the upper third (CW); knob sets decay speed
+      main: Bar/echo decay speed
+      x: Rotate the radial blob (MIDDLE mode only)
+      y: Audio gain
       switch:
-        up: Pulsating spiky peaks with falling peak-hold
-        middle: Solid bargraph
+        up: LED-segment bargraph
+        middle: Radial pulsing blob (Knob X rotates; grey echo trail)
         down: Performance trigger / config menu
-      notes: 24-band Goertzel filter bank on Audio In 1 (~80Hz–8kHz, bass left→treble right); bars decay.
+      notes: 24-band Goertzel filter bank on Audio In 1 (~80Hz–8kHz, bass left→treble right); bars decay; a SWAP trigger mirrors bass↔treble.
   leds:
     - id: LED0
       name: Scope mode
@@ -120,7 +120,7 @@ controls:
     - id: LED2
       name: Config menu open
     - id: LED3
-      name: Phosphor fade active (Switch UP)
+      name: Phosphor fade / persistence active (Switch MIDDLE)
     - id: LED4
       name: Switch DOWN held
     - id: LED5

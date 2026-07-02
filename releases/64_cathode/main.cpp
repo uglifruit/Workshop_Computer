@@ -2068,18 +2068,38 @@ static void __not_in_flash_func(draw_alt_menu)() {
 static const int32_t spec_coeff[SPEC_BANDS] = {
     16383,16383,16382,16381,16380,16377,16374,16369,16362,16351,16335,16311,
     16274,16220,16140,16020,15842,15578,15186,14607,13755,12514,10725,8192 };
+// Per-band gain TILT (Q8, 256 = 1×): cut the low end, lift the highs so a swept sine reads
+// roughly even (bass is otherwise over-represented — many log bands + more natural LF
+// energy). Moderate rising ramp ~0.27× (low) → ~3.0× (high) — between the too-flat and
+// over-corrected extremes.
+static const int32_t spec_tilt[SPEC_BANDS] = {
+    54,64,76,90,107,127,151,179,213,253,300,356,
+    423,502,596,708,840,997,1184,1405,1668,1980,2350,2790 };
 
-static void __not_in_flash_func(spectrum_render)(uint8_t sw) {
-    static int  bar[SPEC_BANDS]  = {0};   // current (decaying) bar heights, cells
-    static int  peak[SPEC_BANDS] = {0};   // falling peak-hold, cells (spiky mode)
+static void __not_in_flash_func(spectrum_render)(uint8_t sw, int32_t knob, bool swap) {
+    static int  bar[SPEC_BANDS]  = {0};   // current (decaying) magnitudes, cells
 
     dilate_cap = 1;
+
+    // Spectrum reads the raw X/Y knobs DIRECTLY (its own controls, independent of the scope's
+    // pickup value): Knob Y = gain, Knob X = radial rotation. (No pickup hysteresis needed —
+    // X/Y always mean the same thing here.)
+    int32_t ky = shared.knob_y;                    // 0..4095 → gain
+    int32_t kx = shared.knob_x;                    // 0..4095 → radial rotate offset
+
+    // Decay speed set by how far through the SPECTRUM third the Main knob is (like the fade-
+    // rate/sweep-speed sub-mappings of the other two zones). Low end of the zone = slow,
+    // lingering decay; high end = fast, snappy.
+    int32_t kspan = 4095 - SPECTRUM_THRESH;
+    int32_t kpos  = knob - SPECTRUM_THRESH;
+    if (kpos < 0) kpos = 0;
+    if (kpos > kspan) kpos = kspan;
+    int fall = 1 + (kpos * 6) / kspan;            // bar fall: 1 (slow) .. 7 (fast) cells/frame
 
     // ── Analyse the frame's audio block. Read the newest N samples (don't disturb the
     //    scope's audio_read_idx — take a private window ending at the write head). ──
     const int N = 512;
     uint32_t aw = audio_write_idx;
-    int32_t ascale = shared.scope_audio_scale;    // Knob Y gain (256 = 1×)
     for (int b = 0; b < SPEC_BANDS; b++) {
         int32_t c = spec_coeff[b];
         int32_t s1 = 0, s2 = 0;
@@ -2094,35 +2114,66 @@ static void __not_in_flash_func(spectrum_render)(uint8_t sw) {
         int32_t p = s1*s1 + s2*s2 - (int32_t)(((int64_t)c * s1 * s2) >> 13);
         if (p < 0) p = 0;
         int32_t mag = (int32_t)isqrt_u((uint32_t)p);
-        // Apply gain, compress, map to a bar height in cells.
-        int h = (int)(((int64_t)mag * ascale) >> 8) / 24;        // scale to screen (tune /24)
+        mag = (mag * spec_tilt[b]) >> 8;                          // per-band tilt (tame lows)
+        // Gain from Knob Y — gentle so the useful range spans the whole knob (not maxed in
+        // the bottom 20%). h in cells.
+        int h = (int)(((int64_t)mag * ky) >> 16);                 // tune the shift for range
         if (h > GREY_H - 1) h = GREY_H - 1;
         // Decay: bars fall smoothly instead of snapping down.
-        if (h >= bar[b]) bar[b] = h; else { bar[b] -= 3; if (bar[b] < h) bar[b] = h; }
-        if (bar[b] > peak[b]) peak[b] = bar[b]; else { peak[b] -= 1; if (peak[b] < 0) peak[b] = 0; }
+        if (h >= bar[b]) bar[b] = h; else { bar[b] -= fall; if (bar[b] < h) bar[b] = h; }
     }
 
-    // ── Render: 24 bars across the width, growing UP from the bottom. ──
-    memset(grey_buffer, 0, GREY_SIZE);
-    const int bw = GREY_W / SPEC_BANDS;            // ~7 px per band
-    for (int b = 0; b < SPEC_BANDS; b++) {
-        int x0 = b * bw;
-        int x1 = x0 + bw - 1;                      // 1px gap between bars
-        int top = GREY_H - 1 - bar[b];
-        if (sw == 1) {
-            // MID: solid bargraph column.
-            for (int gx = x0; gx < x1 && gx < GREY_W; gx++)
-                for (int gy = top; gy < GREY_H; gy++) GREY_SET(grey_buffer, gy, gx, GREY_LEVELS-1);
-        } else {
-            // UP (or DOWN falls through): spiky — thin bar + a falling peak-hold cap.
-            int xc = (x0 + x1) / 2;
-            for (int gy = top; gy < GREY_H; gy++) {
-                if (xc>=0&&xc<GREY_W) GREY_SET(grey_buffer, gy, xc, GREY_LEVELS-1);
-                if (xc+1<GREY_W)      GREY_SET(grey_buffer, gy, xc+1, GREY_LEVELS-1);
+    if (sw == 1) {
+        // ── MID: vertical bargraph, each bar styled like a stack of LEDs — solid white with
+        //    thin BLACK divider lines every SEG cells; the topmost occupied segment is grey-
+        //    shaded by its fractional fill (5 levels). SWAP flips bass↔treble across X. ──
+        memset(grey_buffer, 0, GREY_SIZE);
+        const int bw  = GREY_W / SPEC_BANDS;       // ~7 px per band
+        const int SEG = 6;                         // LED segment height (cells)
+        for (int b = 0; b < SPEC_BANDS; b++) {
+            int bi = swap ? (SPEC_BANDS - 1 - b) : b;   // swap → reverse bin order on screen
+            int x0 = bi * bw, x1 = x0 + bw - 1;    // 1px gap between bars
+            int hgt = bar[b];
+            for (int seg_base = 0; seg_base < hgt; seg_base += SEG) {
+                int seg_fill = hgt - seg_base;      // cells filled in this segment
+                bool topmost = (seg_fill < SEG);
+                int lvl = GREY_LEVELS - 1;          // full segments = white
+                if (topmost) {                      // part-lit top: level by fraction
+                    lvl = 1 + (seg_fill * (GREY_LEVELS - 1)) / SEG;   // 1..4
+                    if (lvl > GREY_LEVELS - 1) lvl = GREY_LEVELS - 1;
+                }
+                int cells = topmost ? seg_fill : (SEG - 1);   // leave 1 cell for the divider
+                int ytop = GREY_H - 1 - (seg_base + cells - 1);
+                int ybot = GREY_H - 1 - seg_base;
+                for (int gx = x0; gx < x1 && gx < GREY_W; gx++)
+                    for (int gy = ytop; gy <= ybot; gy++)
+                        if (gy >= 0 && gy < GREY_H) GREY_SET(grey_buffer, gy, gx, lvl);
             }
-            int py = GREY_H - 1 - peak[b];
-            for (int gx = x0; gx < x1 && gx < GREY_W; gx++)
-                if (py>=0&&py<GREY_H) GREY_SET(grey_buffer, py, gx, GREY_LEVELS-1);
+        }
+    } else {
+        // ── UP: RADIAL BLOB — 24 vertices at even angles, pushed out by magnitude and
+        //    CONNECTED around the perimeter (closed loop). FADE (not clear) → grey echo trail.
+        //    Knob X rotates the whole blob; SWAP reverses the band→angle order. ──
+        static int echo_ctr = 0;
+        int echo_every = 8 - fall;
+        if (echo_every < 1) echo_every = 1;
+        if (++echo_ctr >= echo_every) { echo_ctr = 0; fade_step(); }
+        const int ccx = GREY_W / 2, ccy = GREY_H / 2;
+        const int RMIN = 6, RMAX = GREY_H / 2 - 3;
+        uint8_t rot = (uint8_t)(kx >> 4);          // Knob X → 0..255 rotation offset
+        int vx[SPEC_BANDS], vy[SPEC_BANDS];
+        for (int b = 0; b < SPEC_BANDS; b++) {
+            int bi = swap ? (SPEC_BANDS - 1 - b) : b;
+            uint8_t a = (uint8_t)((bi * 256) / SPEC_BANDS + rot);
+            int len = RMIN + (bar[b] * (RMAX - RMIN)) / (GREY_H - 1);
+            vx[b] = ccx + (cos_a(a) * len >> 8);
+            vy[b] = ccy + (sin_a(a) * len >> 8);
+        }
+        // 2×2-thick perimeter (plot_dot is 2px wide; one extra vertical offset → 2×2).
+        for (int b = 0; b < SPEC_BANDS; b++) {
+            int nb = (b + 1) % SPEC_BANDS;
+            draw_line(vx[b], vy[b],   vx[nb], vy[nb],   GREY_LEVELS-1);
+            draw_line(vx[b], vy[b]+1, vx[nb], vy[nb]+1, GREY_LEVELS-1);
         }
     }
 }
@@ -2138,6 +2189,9 @@ static void __not_in_flash_func(update_framebuffer)() {
     int32_t  gxn     = shared.etch_cvgain_x;
     int32_t  gyn     = shared.etch_cvgain_y;
     uint8_t  sw      = shared.sw_position;
+    // Normal-mode switch view with UP<->MID SWAPPED (DOWN unchanged). All normal-mode
+    // render/behaviour uses nsw; alt-boot keeps the raw physical sw_position.
+    uint8_t  nsw     = (sw == 0) ? 1 : (sw == 1) ? 0 : 2;
     MainMode mode    = main_mode(knob);        // thirds: etch / scope / spectrum
     // (Pulse In 1 is now a configurable trigger source — see below; clearing the screen
     //  is available as the CLS behaviour.)
@@ -2190,7 +2244,7 @@ static void __not_in_flash_func(update_framebuffer)() {
 
     if (mode == MODE_SPECTRUM) {
         etch_have_prev = false;
-        spectrum_render(sw);          // audio analyser (bargraph / spiky), decays
+        spectrum_render(nsw, knob, swap_xy);   // knob-in-zone = decay; swap reverses bins
         expand_grey_to_fb();
         return;
     }
@@ -2251,13 +2305,13 @@ static void __not_in_flash_func(update_framebuffer)() {
             int lo = gpy < mid ? gpy : mid;
             int hi = gpy < mid ? mid : gpy;
 
-            if (sw == 1) {  // MIDDLE — static: clear column for a single clean trace
+            if (nsw == 1) {  // (swapped) static: clear column for a single clean trace
                 for (int gy = 0; gy < GREY_H; gy++) GREY_SET(grey_buffer, gy, gx, 0);
             }
             for (int gy = lo; gy <= hi; gy++)
                 GREY_SET(grey_buffer, gy, gx, GREY_LEVELS - 1);
 
-            if (sw == 0) {  // UP — fade locked to sweep
+            if (nsw == 0) {  // (swapped) fade locked to sweep
                 if (++fade_cols >= FADE_EVERY_COLS) { fade_cols = 0; fade_step(); }
             }
         }
@@ -2298,9 +2352,9 @@ static void __not_in_flash_func(update_framebuffer)() {
             etch_prev_y = gy;
             etch_have_prev = true;
         }
-        // Etch fade (switch UP): rate from knob across the etch quarter — knob 0 =
-        // fastest (~0.25s), knob (ETCH_THRESH-1) = slowest (~3s).
-        if (sw == 0) {
+        // Etch fade (now on MIDDLE after the UP<->MID swap): rate from knob across the etch
+        // zone — knob 0 = fastest (~0.25s), knob (ETCH_THRESH-1) = slowest (~3s).
+        if (nsw == 0) {
             int32_t kp = knob; if (kp < 0) kp = 0; if (kp >= ETCH_THRESH) kp = ETCH_THRESH - 1;
             uint32_t interval = ETCH_FADE_FAST +
                 (uint32_t)((ETCH_FADE_SLOW - ETCH_FADE_FAST) * kp / (ETCH_THRESH - 1));
@@ -2494,7 +2548,10 @@ public:
             pkY = { (GREY_H-1)/2, 256,   256,   (GREY_H-1)/2,    PICK_SCALE, 0,    true };
             pick_init = true;
         }
-        uint8_t swp = shared.sw_position;     // 0=UP 1=MID 2=DOWN
+        uint8_t swp = shared.sw_position;     // 0=UP 1=MID 2=DOWN (physical)
+        // Normal-mode view with UP<->MID swapped (DOWN unchanged) — used for the etch
+        // scale/offset knob-role choice so it matches the render-side swap.
+        uint8_t nswp = (swp == 0) ? 1 : (swp == 1) ? 0 : 2;
         bool down = (swp == 2);
         bool etch_mode = (shared.knob_main < ETCH_THRESH);
 
@@ -2606,7 +2663,7 @@ public:
         //   DOWN → performance effect; knobs hold their current binding (no change).
         uint8_t desiredX, desiredY;
         if (etch_mode) {
-            desiredX = desiredY = (swp == 0) ? PICK_SCALE : PICK_OFFSET;  // UP=scale, MID=offset
+            desiredX = desiredY = (nswp == 0) ? PICK_SCALE : PICK_OFFSET; // (swapped) scale/offset
         } else {
             desiredX = PICK_BASELINE; // scope: X = baseline vertical position
             desiredY = PICK_AUDIO;    // scope: Y = audio gain
@@ -2676,7 +2733,7 @@ public:
         LedOn(1, m == MODE_ETCH);          // etch-a-sketch mode (lower third)
         LedOn(5, m == MODE_SPECTRUM);      // spectrum analyser (upper third)
         LedOn(2, shared.menu_active);      // config menu open
-        LedOn(3, shared.sw_position == 0); // fade active
+        LedOn(3, !shared.alt_mode && shared.sw_position == 1); // fade/persistence (now MIDDLE)
         LedOn(4, shared.sw_position == 2); // switch DOWN held (effect/menu)
     }
 };

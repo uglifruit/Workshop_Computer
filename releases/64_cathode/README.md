@@ -88,9 +88,9 @@ The main knob is a continuous control split into **three zones**:
 
 | Position | Mode | Behaviour |
 |----------|------|-----------|
-| **Lower third (CCW)** | Etch-a-sketch | CV In 1/2 draw X/Y. Within this zone the knob also sets the **fade rate** (extreme CCW ≈ 0.15 s to black; top of the zone ≈ 2 s). |
-| **Middle third** | Oscilloscope | Audio In 1 traces; the sweep speed scales from **slow (~3 s/sweep)** at the low end to **fast (~0.1 s)** at the top. Knob Y = trace gain, Knob X = baseline. |
-| **Upper third (CW)** | Spectrum analyser | Audio In 1 through a 24-band filter bank → vertical bars, bass left → treble right, growing up from the bottom. Knob Y = gain. Bars fall/decay. **Switch UP = pulsating spiky peaks (with falling peak-hold); Switch MIDDLE = solid bargraph.** |
+| **Lower third (CCW)** | Etch-a-sketch | CV In 1/2 draw X/Y. Switch **MIDDLE = Knob X/Y scale the CV** (+ phosphor fade, rate from the knob); Switch **UP = Knob X/Y offset the drawing** (no fade). |
+| **Middle third** | Oscilloscope | Audio In 1 traces; sweep speed scales **slow (~3 s) → fast (~0.1 s)** across the zone. Knob Y = gain, Knob X = baseline. Switch **MIDDLE = phosphor fade/persistence**; Switch **UP = clean static trace**. |
+| **Upper third (CW)** | Spectrum analyser | Audio In 1 through a 24-band filter bank, bass left → treble right, bars fall/decay (decay speed set by the knob within the zone). Knob Y = gain. Switch **MIDDLE = radial pulsing blob** (Knob X rotates it; leaves a grey echo trail); Switch **UP = LED-segment bargraph**. A SWAP trigger mirrors bass↔treble. |
 
 Mode changes take effect immediately and do not clear the screen.
 
@@ -110,8 +110,8 @@ Etch position = offset + CV × scale. CV is sampled at the full 48 kHz and every
 
 | Position | Behaviour |
 |----------|-----------|
-| **UP** | Phosphor fade. In scope mode the fade is **locked to the sweep** — a column reaches black just as the sweep returns to it, at any speed. In etch mode the fade rate is set by the main knob (~0.15–2 s). |
-| **MIDDLE** | Static — pixels persist. In scope mode each column is cleared just before redrawing (single clean trace); in etch mode drawings accumulate. |
+| **MIDDLE** | Phosphor fade / persistence. In scope mode the fade is **locked to the sweep** (a column blackens just as the sweep returns); in etch mode the fade rate is set by the main knob (~0.15–2 s) and Knob X/Y **scale** the CV; in spectrum mode = the radial blob. |
+| **UP** | Static / clean. In scope mode the column is cleared before each redraw (single clean trace); in etch mode drawings accumulate and Knob X/Y **offset** the drawing; in spectrum mode = the LED bargraph. |
 | **DOWN** (momentary) | **Trigger source** (default: cycle the performance effects). Hold to run its assigned behaviour; while held, twist Main/X/Y to open the config menu. |
 
 ### Trigger sources & behaviours
@@ -147,7 +147,7 @@ While holding **Switch DOWN**, **twist the Main knob, Knob X, or Knob Y** to ope
 | LED 0 | Lit in oscilloscope mode |
 | LED 1 | Lit in etch-a-sketch mode |
 | LED 2 | Lit while the config menu is open |
-| LED 3 | Lit in phosphor fade mode (Switch UP) |
+| LED 3 | Lit in phosphor fade / persistence mode (Switch MIDDLE) |
 | LED 4 | Lit while Switch DOWN is held (effect / menu) |
 | LED 5 | Lit in spectrum-analyser mode |
 
@@ -176,10 +176,10 @@ Framebuffer (360×256, 1bpp) ─► PAL word stream ─► PIO/DMA ─► Pu1+Pu
 
 1. Wire the resistor DAC: Pu1 via 1kΩ and Pu2 via 220Ω, both into the RCA centre pin; all grounds to the RCA shell.
 2. Turn the TV on and select the composite input. You should see a stable black screen immediately. If the picture rolls or there is no sync, recheck the resistors and grounds.
-3. Set the Switch to **MIDDLE** (static).
-4. Turn the Main Knob to the **upper range** (oscilloscope) and patch any audio into **Audio In 1** — you'll see the waveform sweep across. Knob position sets sweep speed; Knob Y sets the trace gain.
-5. Try Switch **UP** (phosphor fade) for a glowing persistence trail that dissolves to black.
-6. Turn the Main Knob fully **CCW** (etch-a-sketch). Patch LFOs/CV into **CV In 1** and **CV In 2** — two slightly-detuned sine LFOs draw evolving Lissajous figures. Switch **UP** = Knob X/Y scale the CV; Switch **MIDDLE** = Knob X/Y reposition (offset).
+3. Set the Switch to **UP** (static/clean).
+4. Turn the Main Knob to the **middle range** (oscilloscope) and patch any audio into **Audio In 1** — you'll see the waveform sweep across. Knob position sets sweep speed; Knob Y sets the trace gain.
+5. Try Switch **MIDDLE** (phosphor fade) for a glowing persistence trail that dissolves to black.
+6. Turn the Main Knob fully **CCW** (etch-a-sketch). Patch LFOs/CV into **CV In 1** and **CV In 2** — two slightly-detuned sine LFOs draw evolving Lissajous figures. Switch **MIDDLE** = Knob X/Y scale the CV; Switch **UP** = Knob X/Y reposition (offset).
 7. Hold **Switch DOWN** for the performance effect; tap it repeatedly to cycle effects. While holding DOWN, twist Knob X or Y to open the **config menu**.
 8. Gate **Pulse In 1** / **Pulse In 2** to fire their configured effects (set them in the config menu; e.g. PU1 = CLS to clear).
 
