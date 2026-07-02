@@ -1,9 +1,9 @@
 draft: false
 Name: Cathode Ray
-Description: PAL composite video synthesiser — oscilloscope + etch-a-sketch, greyscale via dithering, performance effects
+Description: Composite video synthesiser (PAL + NTSC builds) — oscilloscope, etch-a-sketch & spectrum analyser, greyscale via dithering, performance effects, 7 alt-boot screensaver/game modes
 Language: C++ (RP2040 Pico SDK)
 Creator: Andy Jenkinson (uglifruit)
-Version: 1.1.0
+Version: 1.2.0
 Status: Released
 License: MIT
 Repository: https://github.com/uglifruit/Workshop_Computer/tree/add-64-cathode/releases/64_cathode
@@ -16,16 +16,19 @@ tags:
   - performance
 
 manual: |
-  Cathode Ray turns the Workshop Computer into a 1-bit PAL composite video synthesiser.
+  Cathode Ray turns the Workshop Computer into a 1-bit composite video synthesiser.
   Wire a two-resistor DAC from Pulse Out 1 (1kΩ) and Pulse Out 2 (220Ω) into an RCA
-  centre pin (grounds common) and connect to any composite-input TV/monitor.
+  centre pin (grounds common) and connect to any composite-input TV/monitor. PAL by
+  default; flash cathode_ray_ntsc.uf2 for NTSC (US) displays.
 
-  Main knob picks the mode: far CCW = etch-a-sketch (draw with CV In 1/2 as X/Y), the
-  rest = oscilloscope (Audio In 1 traces, sweep speed slow→fast across the knob).
-  Greyscale (5 levels) is produced by a 2×2 spatial dither into the 1-bit picture.
+  The Main knob picks the mode across three zones: lower = etch-a-sketch (draw with
+  CV In 1/2 as X/Y), middle = oscilloscope (Audio In 1 traces, sweep speed slow→fast),
+  upper = spectrum analyser (24-band, Audio In 1). Greyscale (5 levels) is produced by a
+  2×2 spatial dither into the 1-bit picture.
 
-  Switch UP = phosphor fade, MIDDLE = static. Knob X/Y are multi-function (CV scale /
-  position offset / scope audio gain & baseline) with pickup hysteresis.
+  Switch MIDDLE = phosphor fade / persistence, UP = static / clean. Knob X/Y are
+  multi-function (CV scale / position offset / scope gain & baseline / spectrum gain &
+  rotate) with pickup hysteresis.
 
   Three independent performance-trigger sources — Switch DOWN, Pulse In 1, Pulse In 2 —
   each runs a configurable behaviour (invert, clear, cycle/random effect, or one fixed

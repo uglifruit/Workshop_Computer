@@ -1,6 +1,6 @@
 # Cathode Ray — Workshop Computer Program Card
 
-A PAL composite video synthesizer. Generates a live black-and-white picture on any composite-input TV or monitor, driven entirely by Eurorack control voltages and audio signals. The picture reacts to what you patch in — sweep an audio waveform across the screen as an oscilloscope trace, or draw freely with two CV sources as X/Y coordinates.
+A composite video synthesizer (PAL and NTSC builds). Generates a live black-and-white picture on any composite-input TV or monitor, driven entirely by Eurorack control voltages and audio signals. The picture reacts to what you patch in — sweep an audio waveform as an oscilloscope trace, draw freely with two CV sources as X/Y coordinates, or watch a 24-band spectrum analyser dance to Audio In 1. Plus a set of alt-boot screensaver/game modes.
 
 The image is 1-bit (black/white) at the pixel level, rendered through a small **2-bit resistor DAC** built from **Pulse Out 1** and **Pulse Out 2** so the signal has proper composite levels (separate sync, black and white). Drawing happens in a half-resolution greyscale working buffer that is **spatially dithered** into the 1-bit picture, giving **5 apparent brightness levels** (black → white) — enough for a smooth CRT-style phosphor fade. No extra hardware is needed beyond two resistors and a phono (RCA) cable.
 
@@ -251,12 +251,18 @@ A chunky first-person **wireframe maze** (ZX81 3D Monster Maze style) with a roa
 - **Greyscale:** half-resolution grey buffer (180×128, `GREY_SCALE`-configurable), **5 brightness levels** per cell, expanded each frame into the 1-bit framebuffer via a 2×2 spatial dither whose 4 orientations cycle every 2 frames (averages out the fixed pattern). Scan-out reads the 1-bit framebuffer unchanged. Dilation is **level-aware** — brighter levels are held on longer so the brightness ramp survives the DAC's slow rise (a lone dim pixel isn't flattened to white).
 - **Phosphor fade:** grey cells decrement toward true black. In scope mode the fade is locked to the sweep (a column blackens just as the sweep returns); in etch mode the main knob sets the rate (~0.15–2 s).
 - **White dilation (analog workaround):** a lone white pixel can't slew to full white through the resistor DAC in one ~143 ns pixel, so it reads grey. After expansion each white pixel is dilated `WHITE_DILATE` pixels to the right, guaranteeing white features are wide enough to render at full brightness. Etch dots are also drawn ≥2 cells wide for the same reason. This trades a little horizontal sharpness for white fidelity — the practical compromise of 1-bit composite.
-- **RAM usage:** ~77% of the RP2040's 256 KB (v1.1): the two double-buffered PAL word streams (~70 KB), the grey buffer (~23 KB), the framebuffer (~11 KB), plus the alt-boot modes' state (the Boing sphere lookup, maze grid + face list, etc). FLASH ~4%.
+- **RAM usage:** ~77% of the RP2040's 256 KB: the two double-buffered word streams (~70 KB), the grey buffer (~23 KB), the framebuffer (~11 KB), plus the alt-boot modes' state (the Boing sphere lookup, maze grid + face list, etc). FLASH ~4%.
 - **Pixels are taller than wide** (portrait) given 360 columns over the ~52µs active line and 256 rows; greyscale cells are 2×2 of these.
 
 ---
 
 ## Changelog
+
+### v1.2.0
+- **Spectrum analyser** — the Main knob is now split into thirds: etch (lower), oscilloscope (middle), and a new **24-band audio spectrum analyser** (upper), driven by Audio In 1. Switch MIDDLE = radial pulsing blob (Knob X rotates it, leaves a grey echo trail); Switch UP = LED-segment bargraph. Bars decay (speed from the knob); a SWAP trigger mirrors bass↔treble.
+- **NTSC build** — `cathode_ray_ntsc.uf2` for US / 60 Hz displays, built from the same source via a `TV_NTSC` compile switch (identical features; a small top/bottom crop). PAL remains the default `cathode_ray.uf2`.
+- **Switch UP↔MIDDLE swapped** across all normal modes (DOWN unchanged): persistence/fade behaviours are now on MIDDLE, static/clean on UP.
+- Developer docs added (`CATHODE_DEV.md`, `MODES.md`).
 
 ### v1.1.0
 - **Alt boot is now a selector of seven screensaver / performance modes** (was one screensaver). Switch UP scrolls with the Main knob and shows per-mode I/O help; MID/DOWN plays.
