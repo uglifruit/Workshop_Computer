@@ -84,17 +84,8 @@ panel:
 
 controls:
   modes:
-    - name: Oscilloscope
-      activation: Main knob in the upper ~75% of travel
-      main: Sweep speed (slow ~3s to fast ~0.1s per sweep)
-      x: Centre-line (0V) vertical position
-      y: Audio trace gain (0–2×)
-      switch:
-        up: Phosphor fade locked to the sweep
-        middle: Static single clean trace
-        down: Performance trigger / config menu
     - name: Etch-a-sketch
-      activation: Main knob in the lowest ~25% (far CCW); knob sets fade rate
+      activation: Main knob in the lower third (CCW); knob sets fade rate
       main: Fade rate (0.15s–2s)
       x: CV In 1 scale (UP) or X position offset (MIDDLE)
       y: CV In 2 scale (UP) or Y position offset (MIDDLE)
@@ -102,6 +93,25 @@ controls:
         up: Knob X/Y scale the CV inputs
         middle: Knob X/Y offset the drawing position
         down: Performance trigger / config menu
+    - name: Oscilloscope
+      activation: Main knob in the middle third
+      main: Sweep speed (slow ~3s to fast ~0.1s per sweep)
+      x: Centre-line (0V) vertical position
+      y: Audio trace gain (0–2×)
+      switch:
+        up: Phosphor fade locked to the sweep
+        middle: Static single clean trace
+        down: Performance trigger / config menu
+    - name: Spectrum analyser
+      activation: Main knob in the upper third (CW)
+      main: (selects the mode)
+      x: (unused)
+      y: Audio gain (0–2×)
+      switch:
+        up: Pulsating spiky peaks with falling peak-hold
+        middle: Solid bargraph
+        down: Performance trigger / config menu
+      notes: 24-band Goertzel filter bank on Audio In 1 (~80Hz–8kHz, bass left→treble right); bars decay.
   leds:
     - id: LED0
       name: Scope mode
@@ -113,3 +123,5 @@ controls:
       name: Phosphor fade active (Switch UP)
     - id: LED4
       name: Switch DOWN held
+    - id: LED5
+      name: Spectrum-analyser mode

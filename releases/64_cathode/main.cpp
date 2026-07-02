@@ -388,8 +388,15 @@ static uint32_t audio_read_idx = 0; // Core 1's drain position in the audio ring
 //   fast = 180/(0.1*50)=36 cols/frame; slow = 180/(3.0*50)=1.2 cols/frame.
 #define SCOPE_STEP_SLOW   (307u)   //  1.2 cols/frame × 256 ≈ 307  (~3.0s/sweep)
 #define SCOPE_STEP_FAST   (9216u)  // 36.0 cols/frame × 256 = 9216 (~0.1s/sweep)
-// Main knob: lowest 25% (0..1023) = etch (knob sets fade rate); upper 75% = scope speed.
-#define ETCH_THRESH       1024     // knob_main below this = etch (CV1 vs CV2) mode
+// Main knob is split into THIRDS: lower = ETCH (CV vs CV), middle = SCOPE (audio wave),
+// upper = SPECTRUM (audio analyser). ETCH_THRESH kept as the etch/scope-and-up boundary
+// (used by Core-0 pickup routing: below it = etch, at/above = scope-style X/Y roles).
+#define ETCH_THRESH       1365     // < this = etch (lower third)
+#define SPECTRUM_THRESH   2730     // >= this = spectrum (upper third); between = scope
+enum MainMode { MODE_ETCH = 0, MODE_SCOPE = 1, MODE_SPECTRUM = 2 };
+static inline MainMode main_mode(int32_t knob) {
+    return knob < ETCH_THRESH ? MODE_ETCH : knob < SPECTRUM_THRESH ? MODE_SCOPE : MODE_SPECTRUM;
+}
 
 // ─── Phosphor fade ───────────────────────────────────────────────────────────
 // Scope fade is LOCKED to the sweep: one global level-decrement each time the sweep
@@ -2052,6 +2059,74 @@ static void __not_in_flash_func(draw_alt_menu)() {
     }
 }
 
+// ── SPECTRUM: audio analyser (Goertzel filter bank) ─────────────────────────────────
+// A bank of 24 integer Goertzel detectors, log-spaced ~80 Hz…8 kHz (fs 48 kHz), run once
+// per frame over the frame's audio block (Core 1). Each → one vertical bar (low freq left).
+// coeff = 2·cos(2π·f/fs) in Q13 (×8192). Bars decay smoothly; UP = spiky peak-hold, MID =
+// solid bargraph. Knob Y = gain (shared.scope_audio_scale), like the scope.
+#define SPEC_BANDS 24
+static const int32_t spec_coeff[SPEC_BANDS] = {
+    16383,16383,16382,16381,16380,16377,16374,16369,16362,16351,16335,16311,
+    16274,16220,16140,16020,15842,15578,15186,14607,13755,12514,10725,8192 };
+
+static void __not_in_flash_func(spectrum_render)(uint8_t sw) {
+    static int  bar[SPEC_BANDS]  = {0};   // current (decaying) bar heights, cells
+    static int  peak[SPEC_BANDS] = {0};   // falling peak-hold, cells (spiky mode)
+
+    dilate_cap = 1;
+
+    // ── Analyse the frame's audio block. Read the newest N samples (don't disturb the
+    //    scope's audio_read_idx — take a private window ending at the write head). ──
+    const int N = 512;
+    uint32_t aw = audio_write_idx;
+    int32_t ascale = shared.scope_audio_scale;    // Knob Y gain (256 = 1×)
+    for (int b = 0; b < SPEC_BANDS; b++) {
+        int32_t c = spec_coeff[b];
+        int32_t s1 = 0, s2 = 0;
+        uint32_t idx = aw - N;
+        for (int n = 0; n < N; n++) {
+            int32_t x = audio_ring[idx & AUDIO_RING_MASK] >> 3;   // scale down (overflow guard)
+            int32_t s0 = ((c * s1) >> 13) - s2 + x;
+            s2 = s1; s1 = s0;
+            idx++;
+        }
+        // Goertzel magnitude²: s1² + s2² − coeff·s1·s2 . Then sqrt → magnitude.
+        int32_t p = s1*s1 + s2*s2 - (int32_t)(((int64_t)c * s1 * s2) >> 13);
+        if (p < 0) p = 0;
+        int32_t mag = (int32_t)isqrt_u((uint32_t)p);
+        // Apply gain, compress, map to a bar height in cells.
+        int h = (int)(((int64_t)mag * ascale) >> 8) / 24;        // scale to screen (tune /24)
+        if (h > GREY_H - 1) h = GREY_H - 1;
+        // Decay: bars fall smoothly instead of snapping down.
+        if (h >= bar[b]) bar[b] = h; else { bar[b] -= 3; if (bar[b] < h) bar[b] = h; }
+        if (bar[b] > peak[b]) peak[b] = bar[b]; else { peak[b] -= 1; if (peak[b] < 0) peak[b] = 0; }
+    }
+
+    // ── Render: 24 bars across the width, growing UP from the bottom. ──
+    memset(grey_buffer, 0, GREY_SIZE);
+    const int bw = GREY_W / SPEC_BANDS;            // ~7 px per band
+    for (int b = 0; b < SPEC_BANDS; b++) {
+        int x0 = b * bw;
+        int x1 = x0 + bw - 1;                      // 1px gap between bars
+        int top = GREY_H - 1 - bar[b];
+        if (sw == 1) {
+            // MID: solid bargraph column.
+            for (int gx = x0; gx < x1 && gx < GREY_W; gx++)
+                for (int gy = top; gy < GREY_H; gy++) GREY_SET(grey_buffer, gy, gx, GREY_LEVELS-1);
+        } else {
+            // UP (or DOWN falls through): spiky — thin bar + a falling peak-hold cap.
+            int xc = (x0 + x1) / 2;
+            for (int gy = top; gy < GREY_H; gy++) {
+                if (xc>=0&&xc<GREY_W) GREY_SET(grey_buffer, gy, xc, GREY_LEVELS-1);
+                if (xc+1<GREY_W)      GREY_SET(grey_buffer, gy, xc+1, GREY_LEVELS-1);
+            }
+            int py = GREY_H - 1 - peak[b];
+            for (int gx = x0; gx < x1 && gx < GREY_W; gx++)
+                if (py>=0&&py<GREY_H) GREY_SET(grey_buffer, py, gx, GREY_LEVELS-1);
+        }
+    }
+}
+
 static void __not_in_flash_func(update_framebuffer)() {
     text_mode = false;   // default: normal (dilated) rendering; text screens set it true
     dilate_cap = WHITE_DILATE;   // default full dilation; some screens lower it per-frame
@@ -2063,7 +2138,7 @@ static void __not_in_flash_func(update_framebuffer)() {
     int32_t  gxn     = shared.etch_cvgain_x;
     int32_t  gyn     = shared.etch_cvgain_y;
     uint8_t  sw      = shared.sw_position;
-    bool     etch    = (knob < ETCH_THRESH);   // far-CCW = etch (CV1 vs CV2)
+    MainMode mode    = main_mode(knob);        // thirds: etch / scope / spectrum
     // (Pulse In 1 is now a configurable trigger source — see below; clearing the screen
     //  is available as the CLS behaviour.)
 
@@ -2113,12 +2188,19 @@ static void __not_in_flash_func(update_framebuffer)() {
     effect_invert = fx_down.strobe_invert || fx_pu1.strobe_invert || fx_pu2.strobe_invert;
     if (finished) { expand_grey_to_fb(); return; }
 
-    if (!etch) {
+    if (mode == MODE_SPECTRUM) {
+        etch_have_prev = false;
+        spectrum_render(sw);          // audio analyser (bargraph / spiky), decays
+        expand_grey_to_fb();
+        return;
+    }
+
+    if (mode == MODE_SCOPE) {
         etch_have_prev = false;   // in scope mode: next etch sample starts fresh
 
-        // Sweep speed from knob: lerp SCOPE_STEP_SLOW..FAST across knob[ETCH_THRESH..4095].
-        // 8.8 fixed-point cols/frame.
-        int32_t kspan = 4095 - ETCH_THRESH;
+        // Sweep speed from knob: lerp SCOPE_STEP_SLOW..FAST across the MIDDLE third of the
+        // knob (ETCH_THRESH..SPECTRUM_THRESH). 8.8 fixed-point cols/frame.
+        int32_t kspan = SPECTRUM_THRESH - ETCH_THRESH;
         int32_t kpos  = knob - ETCH_THRESH; if (kpos < 0) kpos = 0; if (kpos > kspan) kpos = kspan;
         uint32_t step = SCOPE_STEP_SLOW +
             (uint32_t)((int64_t)(SCOPE_STEP_FAST - SCOPE_STEP_SLOW) * kpos / kspan);
@@ -2180,7 +2262,7 @@ static void __not_in_flash_func(update_framebuffer)() {
             }
         }
         audio_read_idx = aw;   // consumed up to the snapshot head
-    } else {
+    } else {   // MODE_ETCH (spectrum returned early above)
         // Etch-a-sketch: drain every CV sample Core 0 queued and plot at white (L2).
         uint32_t w = etch_write_idx;        // snapshot Core 0's write head
         uint32_t avail = w - etch_read_idx; // unsigned wrap-safe count
@@ -2589,9 +2671,10 @@ public:
         shared.scope_audio_scale = pkY.stored_audio;   // Y knob in scope: 0..512 (256=1×)
         shared.scope_baseline    = pkX.stored_baseline; // X knob in scope: baseline row
 
-        bool etch = (shared.knob_main < ETCH_THRESH);
-        LedOn(0, !etch);                   // scope mode
-        LedOn(1, etch);                    // etch-a-sketch mode (far CCW)
+        MainMode m = main_mode(shared.knob_main);
+        LedOn(0, m == MODE_SCOPE);         // scope mode
+        LedOn(1, m == MODE_ETCH);          // etch-a-sketch mode (lower third)
+        LedOn(5, m == MODE_SPECTRUM);      // spectrum analyser (upper third)
         LedOn(2, shared.menu_active);      // config menu open
         LedOn(3, shared.sw_position == 0); // fade active
         LedOn(4, shared.sw_position == 2); // switch DOWN held (effect/menu)

@@ -82,14 +82,15 @@ Both pulse outputs are consumed by the video DAC and are not available as normal
 
 ## Controls
 
-### Main Knob — Mode + Speed
+### Main Knob — Mode
 
-The main knob is a continuous control:
+The main knob is a continuous control split into **three zones**:
 
 | Position | Mode | Behaviour |
 |----------|------|-----------|
-| **Lowest ~25% (far CCW)** | Etch-a-sketch | CV In 1/2 draw X/Y. Within this quarter the knob sets the **fade rate** (extreme CCW ≈ 0.15 s to black; top of the quarter ≈ 2 s). |
-| **Upper ~75%** | Oscilloscope | Audio In 1 sets the trace height; the sweep speed scales from **slow (~3 s/sweep)** just above the etch zone to **fast (~0.1 s)** at full CW. |
+| **Lower third (CCW)** | Etch-a-sketch | CV In 1/2 draw X/Y. Within this zone the knob also sets the **fade rate** (extreme CCW ≈ 0.15 s to black; top of the zone ≈ 2 s). |
+| **Middle third** | Oscilloscope | Audio In 1 traces; the sweep speed scales from **slow (~3 s/sweep)** at the low end to **fast (~0.1 s)** at the top. Knob Y = trace gain, Knob X = baseline. |
+| **Upper third (CW)** | Spectrum analyser | Audio In 1 through a 24-band filter bank → vertical bars, bass left → treble right, growing up from the bottom. Knob Y = gain. Bars fall/decay. **Switch UP = pulsating spiky peaks (with falling peak-hold); Switch MIDDLE = solid bargraph.** |
 
 Mode changes take effect immediately and do not clear the screen.
 
@@ -148,7 +149,7 @@ While holding **Switch DOWN**, **twist the Main knob, Knob X, or Knob Y** to ope
 | LED 2 | Lit while the config menu is open |
 | LED 3 | Lit in phosphor fade mode (Switch UP) |
 | LED 4 | Lit while Switch DOWN is held (effect / menu) |
-| LED 5 | Unused |
+| LED 5 | Lit in spectrum-analyser mode |
 
 ---
 
@@ -160,7 +161,7 @@ CV In 1 ──┐
           ├─ + Knob X/Y base ────────► X/Y cursor (etch mode, 48kHz sampled)
 CV In 2 ──┘
 
-Main Knob ──────────────────────────► etch (far CCW) | scope speed slow→fast (CW)
+Main Knob ──────────────────────────► etch (CCW) | scope (mid) | spectrum (CW)
 Switch ─────────────────────────────► UP=fade  MID=static  DOWN=performance effect (cycles)
 
 Pulse In 1 (gate) ──────────────────► configurable trigger (default: cycle FX)
