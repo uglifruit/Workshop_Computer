@@ -88,6 +88,13 @@ static_assert(FB_HEIGHT % GREY_SCALE == 0, "GREY_SCALE must divide FB_HEIGHT");
 #define TV_ACTIVE_ROW0      8       // first FB row scanned → centres the crop
 #define TV_BLANK_BOT        8       // 6+8+240+8 = 262 ✓
 #define TV_TOTAL_LINES      262
+// Standards-compliant vertical sync (equalising + serrated broad pulses). These lines are
+// carved OUT of the TV_VSYNC_LINES + TV_BLANK_TOP budget (6+8=14 here), so TV_TOTAL_LINES is
+// UNCHANGED. NTSC vertical interval ≈ 3 pre-eq + 3 serrated + 3 post-eq = 9 of 14; the rest
+// stays plain blank. Strict decoders need these to lock; a CRT is happy without.
+#define TV_PRE_EQ_LINES     3
+#define TV_SERRATION_LINES  3
+#define TV_POST_EQ_LINES    3
 #else
 // PAL: line = 64µs = 448 ticks. Segments sum to exactly 448. 312 lines → 50Hz.
 //   fp=12 + hs=33 + bp=40 + av=363 = 448 ✓  (av: FB_WIDTH=360 + 3 px right pad)
@@ -103,8 +110,26 @@ static_assert(FB_HEIGHT % GREY_SCALE == 0, "GREY_SCALE must divide FB_HEIGHT");
 #define TV_ACTIVE_ROW0      0
 #define TV_BLANK_BOT        18      // 5+33+256+18 = 312 ✓
 #define TV_TOTAL_LINES      312
+// Standards-compliant vertical sync (equalising + serrated broad pulses). Carved OUT of the
+// TV_VSYNC_LINES + TV_BLANK_TOP budget (5+33=38 here) so TV_TOTAL_LINES is UNCHANGED. PAL
+// vertical interval ≈ 2 pre-eq + 3 serrated + 2 post-eq = 7 of 38; the rest stays plain blank.
+#define TV_PRE_EQ_LINES     2
+#define TV_SERRATION_LINES  3
+#define TV_POST_EQ_LINES    2
 #endif
 #define VSYNC_HIGH_PX       (LINE_TOTAL_PX - VSYNC_LOW_PX)
+
+// ─── Vertical-interval pulse widths (equalising + serration), format-neutral ──────────────
+// Built from the existing SYNC (0V) and BLACK levels — no new DAC levels. A standard line has
+// ONE h-sync; the vertical interval instead uses pulses at TWICE line rate (once per half-line).
+// HALF_LINE_PX splits the line; EQ_PULSE_PX is the narrow equalising sync width (~2.3µs);
+// SERRATION_PX is how long the broad vertical pulse stays LOW before its half-line notch.
+// (Progressive scan: we emit the correct pulse SHAPES at line rate but without the field-to-
+// field half-line offset of true interlace — enough for many strict decoders; see CATHODE_DEV.)
+#define HALF_LINE_PX        (LINE_TOTAL_PX / 2)     // 224 PAL / 222 NTSC
+#define EQ_PULSE_PX         16                       // narrow equalising sync pulse (~2.3µs @7MHz)
+#define BROAD_NOTCH_PX      EQ_PULSE_PX              // serration notch width in the broad pulse
+#define SERRATION_PX        (HALF_LINE_PX - BROAD_NOTCH_PX)  // broad LOW per half-line before notch
 
 // Bottom-anchored drawing (spectrum bar bases, Lunar ground) sits at the very bottom of the
 // 256-row framebuffer. NTSC crops a few rows off the bottom, so on NTSC nudge such content up
@@ -121,12 +146,33 @@ static_assert(FB_HEIGHT % GREY_SCALE == 0, "GREY_SCALE must divide FB_HEIGHT");
 // format exactly, or the frame period (and thus refresh rate / sync) is wrong.
 //   PAL : 448×312 = 139776 px → 8736 words.   NTSC: 445×262 = 116590 → 7287 words.
 #define FRAME_WORDS         ((LINE_TOTAL_PX * TV_TOTAL_LINES + 15) / 16)
+
+// ── True 2:1 interlace (optional, -DTV_INTERLACE) ────────────────────────────
+// Progressive (default): every frame is TV_TOTAL_LINES lines → one fixed FRAME_WORDS.
+// Interlaced: alternate an EVEN field (TV_TOTAL_LINES lines) and an ODD field (one line
+// MORE), so the two fields sum to the real interlaced totals — PAL 312+313 = 625 (2×312.5),
+// NTSC 262+263 = 525 (2×262.5). The extra line in the odd field creates the half-line
+// vertical offset that IS 2:1 interlace. The two fields therefore have DIFFERENT word counts,
+// so the DMA transfer count is set per-field at each vblank restart (see dma_irq_handler).
+#ifdef TV_INTERLACE
+#define FRAME_WORDS_EVEN    FRAME_WORDS
+#define FRAME_WORDS_ODD     ((LINE_TOTAL_PX * (TV_TOTAL_LINES + 1) + 15) / 16)
+// Buffers must fit the LARGER (odd) field of the LARGER (PAL) format: 448×313 = 140224 → 8764.
+#define FRAME_WORDS_MAX     8764
+#else
 // Buffers are sized for the LARGER (PAL) frame so one allocation serves both formats.
 #define FRAME_WORDS_MAX     8736
+#endif
 
 // Double-buffered word streams: Core 1 writes to back buffer, DMA reads from front.
 static uint32_t __attribute__((aligned(4))) word_buf[2][FRAME_WORDS_MAX];
 static volatile int active_buf = 0;  // which buffer DMA is currently reading
+#ifdef TV_INTERLACE
+// Interlace: the two buffers can hold fields of DIFFERENT length (even vs odd), so the DMA
+// transfer count varies. Core 1 records each buffer's word count; the IRQ reads it to program
+// the correct transfer count when it restarts the DMA on that buffer.
+static volatile uint32_t buf_words[2] = { FRAME_WORDS_EVEN, FRAME_WORDS_EVEN };
+#endif
 
 // ─── Framebuffer (written by Core 1 during vblank) ───────────────────────────
 static uint8_t frame_buffer[FB_SIZE];
@@ -200,6 +246,9 @@ struct SharedState {
     // Generic CV1-out value for non-Patchteroids hybrids (Core 1 writes, Core 0 → CVOut1).
     // Boing uses it for ball height. Range -2048..2047.
     volatile int32_t  alt_cv1;
+    // Colour output (YPbPr on the audio outs). Selected by Audio In 2 in normal modes;
+    // see the COLOUR OUTPUT section. RAM-only, defaults to BANDS.
+    volatile uint8_t  colour_mode;   // ColourMode index (COL_*)
 };
 static SharedState shared;
 
@@ -232,6 +281,132 @@ struct KnobPick {
 // ─── DMA channel ─────────────────────────────────────────────────────────────
 static int dma_chan = -1;
 static volatile bool vblank_ready = false;  // set by DMA IRQ at frame end
+
+// ═════════════════════════════════════════════════════════════════════════════
+// COLOUR OUTPUT — YPbPr chroma on the two (otherwise unused) Audio Outputs
+// ═════════════════════════════════════════════════════════════════════════════
+// The 1-bit picture on Pulse Out 1+2 is, in component-video terms, the Y (luma)
+// channel — it already carries sync and brightness. On a display with a YPbPr
+// COMPONENT input, feed that existing output into Y and drive the colour-difference
+// inputs Pb / Pr from AudioOut1 / AudioOut2 (idle in this firmware) to add colour.
+//
+// This is NOT composite subcarrier colour (no 4.43/3.58 MHz burst) — it targets a
+// component input and treats the mono output as Y. See README "Colour output".
+//
+// Everything here runs on CORE 0 (the audio DAC is flushed once per ProcessSample
+// @48 kHz). No video-path / Core 1 changes. ~960 samples/frame (PAL) ≈ 3-4 per scan
+// line, so colour resolves as coarse vertical bands at best — never per-pixel.
+//
+// TUNING (the two levers, analogous to level_pair[] for luma). Depends on your
+// cabling/display; dial in on a real TV:
+// Wiring assumption: AudioOut ±2048 ≈ ±6 V (eurorack audio level). A ~150 Ω series
+// resistor on each of Pb/Pr divides against the TV's internal 75 Ω (≈ ÷3), so a firmware
+// peak of ~±1 V lands in the ±0.35 V Pb/Pr window. GAIN 3 → ±300 (of 2048) ≈ ±0.88 V peak
+// out of the DAC → ~±0.29 V into the 75 Ω load. Raise GAIN / lower R for more saturation.
+#define CHROMA_GAIN   3        // saturation: multiplies the ±100 hue table → ±300 here (~±0.9 V)
+#define CHROMA_BIAS   0        // DC offset added to Pb/Pr (component mid-level trim)
+// AudioOut range is ±2048; CHROMA_MAX clamps the biased result so a saturated hue plus
+// BIAS can never rail the DAC. Raise CHROMA_GAIN for more vivid colour on your display.
+#define CHROMA_MAX    1900
+
+// Hue → (Pb, Pr) as a small integer table. Pb ≈ (B−Y), Pr ≈ (R−Y). 12 hues around the
+// wheel (red→…→magenta→red). Values are the *unscaled* colour-difference pair (±100);
+// CHROMA_GAIN/BIAS are applied at emit time. Adding finer hues = extend this table.
+#define HUE_STEPS 12
+static const int8_t chroma_pb[HUE_STEPS] = {   0, -50, -87,-100, -87, -50,   0,  50,  87, 100,  87,  50 };
+static const int8_t chroma_pr[HUE_STEPS] = { 100,  87,  50,   0, -50, -87,-100, -87, -50,   0,  50,  87 };
+// (Pb,Pr) trace a circle: hue 0 = red-ish (Pr max), advancing anticlockwise through
+// yellow/green/cyan/blue/magenta. Saturation is uniform (radius 100) for every hue.
+
+// ── Colour-mode registry (SCALABLE) ─────────────────────────────────────────
+// Each colour mode is one entry: a name + a generator that returns a hue index
+// (0..HUE_STEPS-1) given the frame context. To ADD A MODE: append a COL_* enum
+// value, add a generator function, and add one row to colour_modes[]. Nothing else
+// changes — selection (via Audio In 2) and emit are generic over the table. This
+// mirrors the alt-boot ALT_NAMES[]/dispatch pattern used elsewhere.
+struct ColourCtx {
+    uint32_t frame;     // free-running frame counter (advances ~50/60 Hz)
+    int      line;      // current scan line 0..TV_TOTAL_LINES-1 (beam position), or -1 if unknown
+    int32_t  audio;     // AudioIn1 level this sample (-2048..2047) — for reactive modes
+};
+typedef int (*ColourGen)(const ColourCtx &);
+
+// Number of scan lines per hue band (bigger = fewer, taller bands). Derived from the
+// active-line count so bands span the picture on both PAL and NTSC.
+#define COLOUR_BAND_LINES  (TV_ACTIVE_LINES / HUE_STEPS + 1)
+
+// OFF: neutral (no colour). Sentinel hue -1 → emit mid-level on both outs.
+static int colgen_off(const ColourCtx &)      { return -1; }
+// BANDS: rainbow stripes down the screen, slowly scrolling (the default look).
+static int colgen_bands(const ColourCtx &c) {
+    int base = (c.line >= 0) ? (c.line / COLOUR_BAND_LINES) : 0;
+    return (base + (c.frame >> 4)) % HUE_STEPS;          // scroll ~1 band / 16 frames
+}
+// WASH: whole screen one hue, drifting slowly over time.
+static int colgen_wash(const ColourCtx &c)    { return (c.frame >> 5) % HUE_STEPS; }
+// REACTIVE: hue follows AudioIn1 amplitude (quiet→red end, loud→blue end).
+static int colgen_reactive(const ColourCtx &c) {
+    int32_t a = c.audio < 0 ? -c.audio : c.audio;        // 0..2048
+    return (a * HUE_STEPS) / 2049;
+}
+
+enum ColourMode { COL_OFF, COL_BANDS, COL_WASH, COL_REACTIVE, COL_COUNT };
+struct ColourModeDef { const char *name; ColourGen gen; };
+static const ColourModeDef colour_modes[COL_COUNT] = {
+    { "OFF",      colgen_off      },
+    { "BANDS",    colgen_bands    },   // default
+    { "WASH",     colgen_wash     },
+    { "REACTIVE", colgen_reactive },
+};
+#define COLOUR_DEFAULT  COL_BANDS
+
+// Read the video DMA's progress to estimate the current scan line from Core 0, with
+// ZERO Core 1 changes. The whole frame is one DMA transfer of FRAME_WORDS words; words
+// already sent maps linearly to vertical position. Returns 0..TV_TOTAL_LINES-1, or -1
+// if video isn't up yet. The pixels-per-line (LINE_TOTAL_PX) is format-exact (from the
+// TV_* macros), so this is correct for both PAL and NTSC.
+#ifdef TV_INTERLACE
+#define COLOUR_FRAME_WORDS_MAX  FRAME_WORDS_ODD   // odd field is the longer of the two
+#else
+#define COLOUR_FRAME_WORDS_MAX  FRAME_WORDS
+#endif
+static inline int colour_beam_line() {
+    if (dma_chan < 0) return -1;                          // Core 1 hasn't started video yet
+    uint32_t rem = dma_hw->ch[dma_chan].transfer_count;   // words remaining this field/frame
+    if (rem == 0 || rem > COLOUR_FRAME_WORDS_MAX) return -1;  // between frames / not ready
+    // Words scanned so far, counted from the field's own start (odd field starts higher; the
+    // extra half-line only shifts coarse bands by ≤1 line — invisible at HUE_STEPS resolution).
+    uint32_t done_words = (rem <= FRAME_WORDS) ? (FRAME_WORDS - rem)
+                                               : (COLOUR_FRAME_WORDS_MAX - rem);
+    uint32_t done_px = done_words * 16u;                  // pixels scanned so far
+    int line = (int)(done_px / (uint32_t)LINE_TOTAL_PX);
+    if (line < 0 || line >= TV_TOTAL_LINES) return -1;
+    // Convert absolute line → active-picture line (0..TV_ACTIVE_LINES-1), else -1 (blanking).
+    int active = line - (TV_VSYNC_LINES + TV_BLANK_TOP);
+    if (active < 0 || active >= TV_ACTIVE_LINES) return -1;
+    return active;
+}
+
+// Compute the colour for one sample as a (Pb, Pr) pair (already scaled/biased/clamped,
+// ready for AudioOut1/AudioOut2). `mode` is the active ColourMode. Called from the tail
+// of ProcessSample (Core 0); the caller writes the pair to the audio outs. Holds the
+// last hue through blanking in line-synced modes so band edges stay crisp.
+static inline void colour_sample(uint8_t mode, uint32_t frame, int32_t audio,
+                                 int16_t *pb_out, int16_t *pr_out) {
+    static int last_hue = 0;
+    ColourCtx ctx = { frame, colour_beam_line(), audio };
+    int hue = colour_modes[mode].gen(ctx);
+    if (hue < 0) { *pb_out = (int16_t)CHROMA_BIAS; *pr_out = (int16_t)CHROMA_BIAS; return; }
+    if (ctx.line < 0 && mode == COL_BANDS) hue = last_hue;  // blanking → hold, no snap to band 0
+    last_hue = hue;
+    int pb = ((int)chroma_pb[hue] * CHROMA_GAIN) + CHROMA_BIAS;   // ±100 * gain
+    int pr = ((int)chroma_pr[hue] * CHROMA_GAIN) + CHROMA_BIAS;
+    if (pb >  CHROMA_MAX) pb =  CHROMA_MAX; else if (pb < -CHROMA_MAX) pb = -CHROMA_MAX;
+    if (pr >  CHROMA_MAX) pr =  CHROMA_MAX; else if (pr < -CHROMA_MAX) pr = -CHROMA_MAX;
+    *pb_out = (int16_t)pb;
+    *pr_out = (int16_t)pr;
+}
+// ═════════════════════════════════════════════════════════════════════════════
 
 // ─── LCG random (Core 1 only, no locking needed) ─────────────────────────────
 static uint32_t lcg_state = 0xDEADBEEF;
@@ -269,7 +444,16 @@ static const uint8_t level_pair[3] = {
     /*WHITE*/ 0b00,   // both jack HIGH → brightest
 };
 
+// Interlaced builds pass `field` (0=even / 1=odd): the odd field emits ONE extra blank line in
+// the vertical interval, making its total line count TV_TOTAL_LINES+1 so the two fields sum to
+// the true interlaced total (625 PAL / 525 NTSC) and the picture is offset half a line between
+// fields (= 2:1 interlace). Progressive builds keep the ORIGINAL signature (no `field` param) so
+// their compiled output is byte-for-byte unchanged.
+#ifdef TV_INTERLACE
+static void build_frame_words(int back, bool invert, int field) {
+#else
 static void build_frame_words(int back, bool invert) {
+#endif
     uint32_t *buf = word_buf[back];
     int word_idx = 0;
     uint32_t cur_word = 0;
@@ -313,22 +497,66 @@ static void build_frame_words(int back, bool invert) {
         emit_const(BLACK, LINE_BP_PX + LINE_AV_PX);
     };
 
-    // V-sync line: short front porch, long sync pulse, rest black
+    // The default (progressive) build keeps the ORIGINAL flat broad-pulse vsync — forgiving
+    // analog TVs/CRTs lock to it ROCK-SOLID. The "standards-shaped" equalising/serrated vsync
+    // (interlace build only) measurably DEGRADED composite vertical stability on a forgiving TV
+    // (occasional glitches in busy modes) for no benefit — strict decoders didn't lock to it
+    // either. So the two builds now diverge on the vertical-interval shape.
+
+#ifdef TV_INTERLACE
+    // ── Standards-shaped vertical interval (equalising + serrated broad pulses) — INTERLACE ──
+    // Only for the interlace build (strict decoders want these). Both helpers emit pulses at
+    // TWICE line rate (once per half-line) and MUST sum to exactly LINE_TOTAL_PX — the second
+    // half absorbs the odd-pixel remainder (LINE_TOTAL_PX is odd on NTSC) so FRAME_WORDS holds.
+
+    // Equalising line: a narrow SYNC pulse at the start of each half-line, rest BLACK.
+    auto emit_equalising_line = [&]() {
+        emit_const(SYNC,  EQ_PULSE_PX);
+        emit_const(BLACK, HALF_LINE_PX - EQ_PULSE_PX);                 // first half
+        emit_const(SYNC,  EQ_PULSE_PX);
+        emit_const(BLACK, (LINE_TOTAL_PX - HALF_LINE_PX) - EQ_PULSE_PX); // second half (+remainder)
+    };
+
+    // Serrated broad-pulse line: broad SYNC LOW across each half-line, with a short BLACK
+    // notch (serration) at each half-line boundary. This is the vertical sync proper.
+    auto emit_serrated_vsync_line = [&]() {
+        emit_const(SYNC,  SERRATION_PX);
+        emit_const(BLACK, BROAD_NOTCH_PX);                            // first-half notch
+        emit_const(SYNC,  (LINE_TOTAL_PX - HALF_LINE_PX) - BROAD_NOTCH_PX); // second half (+remainder)
+        emit_const(BLACK, BROAD_NOTCH_PX);                            // second-half notch
+    };
+
+    // Vertical interval, standard order: pre-equalising → serrated broad vsync → post-
+    // equalising → remaining top-blank. Carved from the TV_VSYNC_LINES + TV_BLANK_TOP budget so
+    // the TOTAL line count (and FRAME_WORDS) is unchanged — only the pulse SHAPES differ.
+    static_assert(TV_PRE_EQ_LINES + TV_SERRATION_LINES + TV_POST_EQ_LINES
+                  <= TV_VSYNC_LINES + TV_BLANK_TOP,
+                  "vertical-interval eq/serration lines must fit the vsync+blank-top budget");
+    for (int l = 0; l < TV_PRE_EQ_LINES;    l++) emit_equalising_line();
+    for (int l = 0; l < TV_SERRATION_LINES; l++) emit_serrated_vsync_line();
+    for (int l = 0; l < TV_POST_EQ_LINES;   l++) emit_equalising_line();
+    for (int l = 0; l < (TV_VSYNC_LINES + TV_BLANK_TOP)
+                        - (TV_PRE_EQ_LINES + TV_SERRATION_LINES + TV_POST_EQ_LINES); l++)
+        emit_blank_line();
+#else
+    // Default (progressive): the ORIGINAL shipped vertical interval — flat broad-pulse vsync
+    // lines then plain blank lines. Proven rock-solid on real TVs.
     auto emit_vsync_line = [&]() {
         emit_const(BLACK, LINE_FP_PX);
         emit_const(SYNC,  VSYNC_LOW_PX);
         emit_const(BLACK, VSYNC_HIGH_PX - LINE_FP_PX);
     };
+    for (int l = 0; l < TV_VSYNC_LINES; l++) emit_vsync_line();
+    for (int l = 0; l < TV_BLANK_TOP;   l++) emit_blank_line();
+#endif
 
-    // V-sync lines
-    for (int l = 0; l < TV_VSYNC_LINES; l++) {
-        emit_vsync_line();
-    }
-
-    // Top blank lines
-    for (int l = 0; l < TV_BLANK_TOP; l++) {
-        emit_blank_line();
-    }
+#ifdef TV_INTERLACE
+    // Odd field: one EXTRA blank line here. It makes the odd field TV_TOTAL_LINES+1 lines long
+    // (so the two fields sum to 625 PAL / 525 NTSC) and shifts this field's picture down half a
+    // line's worth relative to the even field on the display's flyback — i.e. 2:1 interlace.
+    // (Progressive builds never reach this — the whole block is compiled out.)
+    if (field) emit_blank_line();
+#endif
 
     // Active video. TV_ACTIVE_LINES rows are scanned, starting at framebuffer row
     // TV_ACTIVE_ROW0 (PAL: 0/256 = all rows; NTSC: 8/240 = a centred crop of the 256-row
@@ -2858,6 +3086,12 @@ static void __not_in_flash_func(update_framebuffer)() {
 static void __not_in_flash_func(dma_irq_handler)() {
     dma_hw->ints1 = 1u << dma_chan;  // clear IRQ flag on DMA_IRQ_1
 
+#ifdef TV_INTERLACE
+    // Interlace: the buffer about to be scanned may be a different length (even vs odd field)
+    // than the one that just finished. Program its transfer count BEFORE the read-addr trigger
+    // (on RP2040 the trigger reloads TRANS_COUNT from the register), then trigger. Order matters.
+    dma_channel_set_trans_count(dma_chan, buf_words[active_buf], false);
+#endif
     // Restart DMA from the same (now-completed) active buffer — next frame uses same data
     // until Core 1 swaps in a new back buffer. This ensures video never glitches.
     dma_channel_set_read_addr(dma_chan, word_buf[active_buf], true);
@@ -2902,8 +3136,15 @@ static void __not_in_flash_func(core1_main)() {
     memset(grey_buffer, 0, GREY_SIZE);
     memset(frame_buffer, 0, FB_SIZE);
     expand_grey_to_fb();          // ensure frame_buffer is valid before first pack
+#ifdef TV_INTERLACE
+    // Interlaced: seed both buffers as the EVEN field (buf_words defaults to FRAME_WORDS_EVEN);
+    // the loop starts alternating from the first built frame.
+    build_frame_words(0, false, 0);
+    build_frame_words(1, false, 0);
+#else
     build_frame_words(0, false);
     build_frame_words(1, false);
+#endif
     active_buf = 0;
 
     // Configure DMA: read from word_buf[0], write to PIO TX FIFO, loop
@@ -2950,7 +3191,16 @@ static void __not_in_flash_func(core1_main)() {
         // Build new word stream into back buffer
         int back = 1 - active_buf;
         bool invert = effect_invert;  // INVERT behaviour / strobe set this on Core 1
+#ifdef TV_INTERLACE
+        // Alternate even/odd fields each built frame. Record this buffer's field length so the
+        // IRQ programs the matching DMA transfer count when it restarts on this buffer.
+        static uint32_t field_ctr = 0;
+        int field = (++field_ctr) & 1;
+        build_frame_words(back, invert, field);
+        buf_words[back] = field ? FRAME_WORDS_ODD : FRAME_WORDS_EVEN;
+#else
         build_frame_words(back, invert);
+#endif
 
         // Swap buffers: next DMA IRQ handler will restart using the new active_buf.
         // The current DMA is already running (restarted in IRQ handler) using the OLD active_buf.
@@ -2969,6 +3219,7 @@ public:
         shared.cfg_sw  = BHV_CYCLE_FX;    // defaults reproduce original firmware
         shared.cfg_pu1 = BHV_CYCLE_FX;
         shared.cfg_pu2 = BHV_INVERT;
+        shared.colour_mode = COLOUR_DEFAULT;   // rainbow bands out of the box
         // Core 1 is launched here (constructor body), before Run() is called.
         // ComputerCard's hardware init runs in its constructor (which has already
         // completed by this point), so GPIO 8 is set up as gpio_out.
@@ -3024,6 +3275,28 @@ public:
         else if (!ain1_armed && a1 < AIN_LO) ain1_armed = true;
         if (ain2_armed && a2 > AIN_HI) { shared.ain2_rising = true; ain2_armed = false; }
         else if (!ain2_armed && a2 < AIN_LO) ain2_armed = true;
+
+        // Audio In 2 selects the COLOUR mode — but ONLY in normal boot (in alt boot AIN2
+        // is FourTrig's trigger, latched just above). Map the CV into COL_COUNT zones with
+        // hysteresis so it doesn't chatter at a boundary. An unpatched jack sits near 0 →
+        // the DEAD-ZONE keeps the default (BANDS); patch an LFO/CV to sweep the modes.
+        // Zone selection is generic over colour_modes[] — new modes need no change here.
+        if (!shared.alt_mode) {
+            static uint8_t col_sel = COLOUR_DEFAULT;
+            int32_t v = a2 + 2048;                       // 0..4095
+            if (v < 0) v = 0; else if (v > 4095) v = 4095;
+            if (a2 > -256 && a2 < 256) {                 // dead zone around 0 V (unpatched)
+                col_sel = COLOUR_DEFAULT;
+            } else {
+                int zone = (v * COL_COUNT) / 4096;       // 0..COL_COUNT-1
+                if (zone < 0) zone = 0; else if (zone >= COL_COUNT) zone = COL_COUNT - 1;
+                // Hysteresis: only move once clear of the current zone's centre band.
+                int cur_lo = (col_sel * 4096) / COL_COUNT;
+                int cur_hi = ((col_sel + 1) * 4096) / COL_COUNT;
+                if (v < cur_lo - 128 || v >= cur_hi + 128) col_sel = (uint8_t)zone;
+            }
+            shared.colour_mode = col_sel;
+        }
 
         Switch sw = SwitchVal();
         if      (sw == Switch::Up)     shared.sw_position = 0;
@@ -3243,6 +3516,17 @@ public:
         LedOn(2, shared.menu_active);      // config menu open
         LedOn(3, !shared.alt_mode && shared.sw_position == 1); // fade/persistence (now MIDDLE)
         LedOn(4, shared.sw_position == 2); // switch DOWN held (effect/menu)
+
+        // ── Colour output (YPbPr on the audio outs) ────────────────────────────
+        // Emit chroma for this sample: AudioOut1 = Pb, AudioOut2 = Pr. A free-running
+        // frame counter drives the time-based modes (wash drift / band scroll);
+        // ~960 samples/frame @ PAL (48000/50). Beam-line sync comes from the DMA count.
+        static uint32_t col_sample = 0, col_frame = 0;
+        if (++col_sample >= 960u) { col_sample = 0; col_frame++; }
+        int16_t pb, pr;
+        colour_sample(shared.colour_mode, col_frame, shared.audio_y, &pb, &pr);
+        AudioOut1(pb);   // → Pb
+        AudioOut2(pr);   // → Pr
     }
 };
 

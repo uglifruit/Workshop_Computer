@@ -57,8 +57,38 @@ All timing divergence lives in a single block near the top of main.cpp. Everythi
   `TV_ACTIVE_LINES`, `TV_ACTIVE_ROW0`, `TV_TOTAL_LINES`) so `build_frame_words()` is shared.
 - **`FRAME_WORDS` is format-exact** and drives the DMA transfer count — it MUST equal the real
   words/frame or the refresh rate/sync is wrong. Buffers are sized to `FRAME_WORDS_MAX` (PAL).
-- VSYNC is a simplified broad-pulse block (no equalising pulses). Fine for both; a fussy NTSC
-  set might want the line count/width nudged — all inside the `#ifdef`.
+- **The default (progressive) build uses the ORIGINAL flat broad-pulse vsync** — `emit_vsync_line`
+  (BLACK / SYNC(`VSYNC_LOW_PX`) / BLACK) for `TV_VSYNC_LINES`, then `TV_BLANK_TOP` blank lines. This
+  is the shipped scheme and locks ROCK-SOLID on forgiving analog TVs/CRTs. **Do not "improve" it.**
+  - **Tier-1 lesson (reverted):** a "standards-shaped" vertical interval (equalising + serrated broad
+    pulses) was tried on the default path. On a forgiving TV it measurably **degraded** composite
+    vertical stability (occasional glitches in busy modes like Starfield/Boing) — and it did **not**
+    make a strict component input lock either. Net loss, so it was **removed from the default build**
+    and now lives ONLY in the interlace variant (where it has a rationale). Moral: the simple flat
+    vsync is empirically better on real forgiving displays; don't reshape it without a display that
+    actually needs it AND a composite-stability regression check.
+
+### Interlace — the optional `-DTV_INTERLACE` variant (Tier-2)
+For sets that demand true 2:1 interlace, build with `-DTV_INTERLACE` (the `cathode_ray_interlace` /
+`cathode_ray_interlace_ntsc` CMake targets → separate uf2s; the plain targets stay progressive and
+**byte-for-byte unchanged** — verified). It's off by default; everything below is compiled out unless
+the flag is set.
+- **Scheme = alternating field lengths.** Even field = `TV_TOTAL_LINES` lines; odd field = **one extra
+  blank line** in the vertical interval → `TV_TOTAL_LINES+1`. The two fields sum to the real interlaced
+  totals: **PAL 312+313 = 625** (2×312.5), **NTSC 262+263 = 525** (2×262.5). The extra odd-field line
+  produces the half-line vertical offset that IS 2:1 interlace.
+- **Per-field DMA transfer count (the delicate bit).** The fields differ by one line (28 words), so the
+  two word-stream buffers have different lengths. `FRAME_WORDS_EVEN` / `FRAME_WORDS_ODD`; `FRAME_WORDS_MAX`
+  is bumped to the odd size (8764) so both buffers fit. Core 1 records each buffer's length in
+  `buf_words[]`; `dma_irq_handler` calls `dma_channel_set_trans_count(dma_chan, buf_words[active_buf], false)`
+  **before** the read-addr trigger (on RP2040 the trigger reloads TRANS_COUNT from the register — so
+  order = set-count-then-trigger). The core1 loop toggles `field` each frame and builds the back buffer
+  for that field. Get this restart sequence wrong and there's NO picture (composite included) — it's the
+  one place interlace can break everything.
+- **Colour** (`colour_beam_line`) tolerates the two field lengths via `COLOUR_FRAME_WORDS_MAX`; the
+  ≤1-line offset between fields is invisible at the coarse `HUE_STEPS` band resolution.
+- **Still verify `FRAME_WORDS` (per field) matches** if you touch vertical timing, or the picture dies.
+  Progressive remains the primary/tested path; interlace is the experimental strict-decoder build.
 
 ### The analog white-fidelity gotcha (important)
 A lone ~143 ns white pixel can't slew to full white through the resistor DAC → it reads grey.
@@ -176,6 +206,47 @@ picks it up by naming convention; it isn't referenced in info.yaml).
 - `dilate_cap` and `text_mode` are per-frame globals; reset at the top of update_framebuffer.
   If a screen looks too bloomed or too dim, that's the lever.
 - Black must sit above sync (`level_pair`), or the TV won't lock — a lesson already paid for.
+
+---
+
+## 8. Colour output (YPbPr on the audio outs)
+
+The mono picture is the **Y (luma)** of a component signal. On a **YPbPr** display, the existing
+2-resistor video output feeds **Y**; **AudioOut1 → Pb**, **AudioOut2 → Pr** add colour. This is
+component colour, **not** composite subcarrier colour (no burst) — so it needs a component input and
+resolves as coarse bands, never per-pixel.
+
+All of it lives in the **`COLOUR OUTPUT` block near the top of main.cpp** and a few lines in
+`ProcessSample`. It is **100% Core 0** — no video-path / Core 1 change:
+
+- **Emit:** the audio DAC is flushed once per `ProcessSample` @ 48 kHz. At the tail of ProcessSample
+  we call `colour_sample()` → `AudioOut1(pb); AudioOut2(pr);`. ~960 samples/frame (PAL) ≈ 3-4 per
+  scan line — the hard ceiling on colour resolution.
+- **Beam position, for free:** `colour_beam_line()` reads `dma_hw->ch[dma_chan].transfer_count`
+  (words left in the one-shot frame DMA) and maps it to an active line. `dma_chan` is the Core-1
+  video channel (6); Core 0 only reads it, so there is **no new shared state and no Core 1 change**.
+  The math uses the format-neutral `LINE_TOTAL_PX` / `TV_VSYNC_LINES` / `TV_BLANK_TOP` /
+  `TV_ACTIVE_LINES` macros, so it is correct for **both PAL and NTSC automatically** (same as
+  `build_frame_words`). The active-line offset assumes the frame word order VSYNC→BLANK_TOP→ACTIVE,
+  which is exactly how `build_frame_words()` emits it — keep them in sync if you reorder that.
+- **Scalable mode registry (mirror of the alt-boot pattern):** a `ColourMode` enum + a
+  `colour_modes[]` table of `{name, generator}`. Each generator is `int gen(const ColourCtx&)`
+  returning a hue index (or -1 = neutral). **To add a colour mode:** append a `COL_*` enum value,
+  write a `colgen_*`, add one row to `colour_modes[]`. Selection and emit are generic over the
+  table — nothing else changes. `ColourCtx` gives a generator the free-running `frame`, the current
+  `line` (-1 during blanking), and the `audio` level.
+- **Hue table:** `chroma_pb[]` / `chroma_pr[]` are a 12-point circle of colour-difference pairs
+  (±100). More/finer hues = extend the table (`HUE_STEPS`).
+- **Selection:** `ProcessSample` maps `AudioIn2()` → `shared.colour_mode` **only in normal boot**
+  (`!shared.alt_mode`), with a dead-zone at 0 V (unpatched → `COLOUR_DEFAULT` = BANDS) and zone
+  hysteresis. In alt boot AIN2 stays FourTrig's trigger — untouched. An LFO into AIN2 automates
+  colour-mode changes.
+- **Tuning (the two levers, like `level_pair[]` for luma):** `CHROMA_GAIN` (saturation) and
+  `CHROMA_BIAS` (component mid-level trim); `CHROMA_MAX` clamps so a saturated hue + bias can't rail
+  the ±2048 DAC. **NTSC note:** the beam-line math is already format-correct, but the *level* scaling
+  of Pb/Pr differs slightly between standards — if NTSC colour looks off, adjust `CHROMA_GAIN`/`BIAS`
+  (they are shared constants today; split them under `#ifdef TV_NTSC` if a set needs it). PAL tuned
+  first. Cost: ~370 bytes RAM, negligible FLASH.
 
 ---
 

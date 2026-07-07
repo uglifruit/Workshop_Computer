@@ -1,10 +1,10 @@
 draft: false
 Name: Cathode Ray
-Description: Composite video synthesiser (PAL + NTSC builds) — oscilloscope, etch-a-sketch & spectrum analyser, greyscale via dithering, performance effects, 8 alt-boot screensaver/game modes
+Description: Composite video synthesiser (PAL + NTSC builds) — oscilloscope, etch-a-sketch & spectrum analyser, greyscale via dithering, performance effects, 8 alt-boot screensaver/game modes, optional YPbPr colour on the audio outputs
 Language: C++ (RP2040 Pico SDK)
 Creator: Andy Jenkinson (uglifruit)
-Version: 1.2.0
-Status: Released
+Version: 1.3.0-wip
+Status: Work in progress (NOT released — colour feature unproven on hardware)
 License: MIT
 Repository: https://github.com/TomWhitwell/Workshop_Computer/tree/main/releases/96_cathode
 
@@ -20,6 +20,13 @@ manual: |
   Wire a two-resistor DAC from Pulse Out 1 (1kΩ) and Pulse Out 2 (220Ω) into an RCA
   centre pin (grounds common) and connect to any composite-input TV/monitor. PAL by
   default; flash cathode_ray_ntsc.uf2 for NTSC (US) displays.
+
+  COLOUR (optional): the mono picture is the Y (luma) of a component signal. On a display
+  with a YPbPr component input, feed the existing 2-resistor output into Y and drive Pb from
+  Audio Out 1 and Pr from Audio Out 2 to add colour. Colour is always generated; Audio In 2
+  selects the mode — unpatched = slow rainbow bands down the screen; patch a CV/LFO to sweep
+  BANDS / WASH (whole-screen drift) / REACTIVE (hue follows Audio In 1) / OFF. Not per-pixel
+  and not composite-subcarrier colour: coarse bands on a component input only.
 
   The Main knob picks the mode across three zones: lower = etch-a-sketch (draw with
   CV In 1/2 as X/Y), middle = oscilloscope (Audio In 1 traces, sweep speed slow→fast),
@@ -68,8 +75,8 @@ panel:
       name: Scope Input
       description: Oscilloscope trace / spectrum source (gain via Knob Y). In FourTrig alt-mode, a trigger input (top-left quadrant)
     - id: AudioIn2
-      name: Trigger (FourTrig)
-      description: Unused in the main synth. In FourTrig alt-mode, a trigger input (top-right quadrant)
+      name: Colour Mode / Trigger
+      description: In the main synth, a CV that selects the colour mode (unpatched = rainbow bands; sweep for WASH / REACTIVE / OFF). In FourTrig alt-mode, a trigger input (top-right quadrant)
     - id: CVIn1
       name: Draw X
       description: Etch-a-sketch X axis (scaled/offset by Knob X), sampled at 48kHz
@@ -83,6 +90,12 @@ panel:
       name: Trigger 2
       description: Configurable performance trigger (default invert while held)
   outputs:
+    - id: AudioOut1
+      name: Colour Pb
+      description: YPbPr colour-difference Pb — drive a component display's Pb input (optional colour; see manual). Silent if colour is OFF.
+    - id: AudioOut2
+      name: Colour Pr
+      description: YPbPr colour-difference Pr — drive a component display's Pr input (optional colour; see manual). Silent if colour is OFF.
     - id: PulseOut1
       name: Video DAC bit 0
       description: Composite video via 1kΩ (black pedestal); summed into RCA centre pin

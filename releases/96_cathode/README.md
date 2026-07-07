@@ -57,6 +57,35 @@ The signal is **PAL** (50Hz) by default. Most modern TVs auto-detect; a PAL-only
 
 For displays that only accept **NTSC** (common in the US), flash **`cathode_ray_ntsc.uf2`** instead of `cathode_ray.uf2`. It is the *same firmware* — identical features, controls and modes — retimed for NTSC (445 px/line, 262 lines, ~60Hz). The picture is cropped very slightly top and bottom to fit NTSC's fewer scanlines; everything else is identical to the PAL version. (The two are built from one source via a `TV_NTSC` compile switch, so both stay in lockstep.) PAL is the primary/tested build; the NTSC build is a courtesy for those without a multi-standard TV.
 
+### Colour output (optional, YPbPr)
+
+The black-and-white picture is, in component-video terms, the **Y (luma)** channel — it already carries sync and brightness. On a display with a **YPbPr component input** (the red / green / blue RCA trio), you can add colour by feeding the existing picture into **Y** and driving the two colour-difference inputs, **Pb** and **Pr**, from the Workshop Computer's two **Audio Outputs** (which this firmware otherwise leaves idle):
+
+```
+Existing 2-resistor video output ─────► Y  (green RCA)   ← luma + sync, as before
+Audio Out 1 ──────────────────────────► Pb (blue RCA)    ← colour-difference
+Audio Out 2 ──────────────────────────► Pr (red RCA)     ← colour-difference
+GND ──────────────────────────────────► all RCA shells
+```
+
+The colour is **always generated** — no menu needed. **Audio In 2** selects the colour mode:
+
+| Audio In 2 | Colour mode |
+|------------|-------------|
+| **Unpatched** (≈ 0 V) | **BANDS** — a slow rainbow of horizontal stripes scrolling down the screen (the default). |
+| Patch a CV / LFO | Sweeps through **BANDS → WASH → REACTIVE → OFF**. |
+
+- **BANDS** — rainbow stripes down the screen, loosely locked to vertical position, slowly scrolling.
+- **WASH** — the whole screen one hue at a time, drifting gently through the wheel.
+- **REACTIVE** — hue follows the **Audio In 1** level (quiet → warm, loud → cool). Patch your audio into Audio In 1 and the colour reacts to it.
+- **OFF** — no colour (plain black-and-white). Because a CV selects the mode, an LFO into Audio In 2 will *automate* the colour changes.
+
+**Honest limits.** This is **not** per-pixel colour and **not** composite (subcarrier) colour — it's component YPbPr, driven from the audio DAC at 48 kHz (≈ 3–4 samples per scan line), so colour resolves as **coarse vertical bands**, not fine detail. It needs a **component** input (a plain composite/yellow-RCA-only TV won't show the colour — the picture stays black-and-white, which is harmless). If a display doesn't like the raw levels, the two tuning constants `CHROMA_GAIN` (saturation) and `CHROMA_BIAS` (mid-level trim) at the top of `main.cpp` are the levers, and a small passive bias/attenuation network on the Pb/Pr lines may help — dial it in on your set.
+
+**Display compatibility (important).** Cathode Ray's video is generated from scratch and is aimed at **forgiving analog displays**. Composite works on essentially any composite-input TV or CRT. The colour (component) path, however, needs a display whose component input is a **tolerant analog** one — a CRT / PVM with YPbPr, or a scaler like an **OSSC**. Some modern TVs' component inputs (and all cheap composite/component→HDMI converter boxes) contain **strict digital decoders** that will **not lock** to this signal and show "no signal" — this has been observed on real hardware even with standards-shaped sync and true interlace (see the `TV_INTERLACE` build below). That's a limitation of driving video from a 2-bit resistor DAC into a strict decoder, not a bug. If your component input won't lock, it isn't a candidate for the colour feature — try a CRT/OSSC. Composite is unaffected and always works.
+
+**Experimental interlaced build.** A `cathode_ray_interlace.uf2` (and `_ntsc`) is provided for displays that specifically demand true 2:1 interlace. It emits proper equalising/serrated sync and alternates 312/313-line fields (625 total, PAL). It is **experimental** — it can shift the vertical position on some sets, and did **not** make a tested strict TV's component input lock. The **default `cathode_ray.uf2` (progressive) is the recommended build**; only try the interlace one if a specific display needs it.
+
 ---
 
 ## Download & install
@@ -78,6 +107,7 @@ To flash: hold the Workshop Computer's boot button while connecting USB (it moun
 | Jack | Function |
 |------|----------|
 | Audio In 1 | Oscilloscope trace (scope mode). Deflects the trace from centre; positive voltage = up. Gain set by Knob Y. |
+| Audio In 2 | **Colour mode select** (see [Colour output](#colour-output-optional-ypbpr)). Unpatched ≈ rainbow bands; patch a CV/LFO to sweep the colour modes. (In FourTrig alt-mode instead, a trigger input.) |
 | CV In 1 | Etch-a-sketch X (etch mode). Scaled/offset by Knob X. Sampled at full 48 kHz. |
 | CV In 2 | Etch-a-sketch Y (etch mode). Scaled/offset by Knob Y. Sampled at full 48 kHz. |
 | Pulse In 1 | **Trigger source** — runs the behaviour assigned in the config menu (default: CYCLE FX). Set it to CLS for the old screen-clear. |
@@ -91,6 +121,8 @@ To flash: hold the Workshop Computer's boot button while connecting USB (it moun
 |------|----------|
 | Pulse Out 1 | Composite video — DAC bit 0 (via 1kΩ). |
 | Pulse Out 2 | Composite video — DAC bit 1 (via 220Ω). |
+| Audio Out 1 | **Colour Pb** (YPbPr colour-difference) — to a component display's Pb input. Optional; see [Colour output](#colour-output-optional-ypbpr). |
+| Audio Out 2 | **Colour Pr** (YPbPr colour-difference) — to a component display's Pr input. Optional; see [Colour output](#colour-output-optional-ypbpr). |
 | CV Out 1 | Alt boot only — mode-dependent (Patchteroids pitch / Boing height / Lunar altitude / …). Unused in the main synth. |
 | CV Out 2 | Alt boot only — mode-dependent event pulse (hit / bounce / crash / maze-exit / FourTrig trigger). Unused in the main synth. |
 
@@ -286,6 +318,9 @@ A trigger-driven **visual "drum machine"**. All **four inputs are triggers** —
 ---
 
 ## Changelog
+
+### v1.3.0
+- **Colour output (YPbPr)** — the two Audio Outputs now drive **Pb** (Audio Out 1) and **Pr** (Audio Out 2) so the mono picture, used as **Y**, gains colour on a component display. Colour is always generated; **Audio In 2** selects the mode — unpatched = a slow scrolling **rainbow-BANDS** default, and a CV/LFO sweeps **BANDS / WASH (whole-screen drift) / REACTIVE (hue follows Audio In 1) / OFF**. Coarse vertical bands, not per-pixel or composite-subcarrier colour; needs a YPbPr input (plain composite TVs stay black-and-white). Tuning via `CHROMA_GAIN` / `CHROMA_BIAS` in `main.cpp`. Colour is generated entirely on Core 0 from the video DMA's beam position, so the picture/timing is untouched. Works on both PAL and NTSC builds.
 
 ### v1.2.0
 - **Spectrum analyser** — the Main knob is now split into thirds: etch (lower), oscilloscope (middle), and a new **24-band audio spectrum analyser** (upper), driven by Audio In 1. Switch MIDDLE = radial pulsing blob (Knob X rotates it, leaves a grey echo trail); Switch UP = LED-segment bargraph. Bars decay (speed from the knob); a SWAP trigger mirrors bass↔treble.
