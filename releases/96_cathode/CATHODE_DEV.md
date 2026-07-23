@@ -57,16 +57,32 @@ All timing divergence lives in a single block near the top of main.cpp. Everythi
   `TV_ACTIVE_LINES`, `TV_ACTIVE_ROW0`, `TV_TOTAL_LINES`) so `build_frame_words()` is shared.
 - **`FRAME_WORDS` is format-exact** and drives the DMA transfer count — it MUST equal the real
   words/frame or the refresh rate/sync is wrong. Buffers are sized to `FRAME_WORDS_MAX` (PAL).
-- **The default (progressive) build uses the ORIGINAL flat broad-pulse vsync** — `emit_vsync_line`
-  (BLACK / SYNC(`VSYNC_LOW_PX`) / BLACK) for `TV_VSYNC_LINES`, then `TV_BLANK_TOP` blank lines. This
-  is the shipped scheme and locks ROCK-SOLID on forgiving analog TVs/CRTs. **Do not "improve" it.**
-  - **Tier-1 lesson (reverted):** a "standards-shaped" vertical interval (equalising + serrated broad
-    pulses) was tried on the default path. On a forgiving TV it measurably **degraded** composite
-    vertical stability (occasional glitches in busy modes like Starfield/Boing) — and it did **not**
-    make a strict component input lock either. Net loss, so it was **removed from the default build**
-    and now lives ONLY in the interlace variant (where it has a rationale). Moral: the simple flat
-    vsync is empirically better on real forgiving displays; don't reshape it without a display that
-    actually needs it AND a composite-stability regression check.
+- **THREE vsync configurations, from two compile flags** (`TV_EQSYNC`, `TV_INTERLACE`). `TV_INTERLACE`
+  auto-defines `TV_EQSYNC`. The vsync SHAPE keys on `TV_EQSYNC`; the interlace field/DMA machinery keys
+  on `TV_INTERLACE`. Pick the build to match the display:
+
+  | Build (uf2) | Flags | vsync shape | scan | For |
+  |---|---|---|---|---|
+  | `cathode_ray` (default) | — | flat broad-pulse | progressive | forgiving analog TVs / flatscreens |
+  | `cathode_ray_eqsync` | `TV_EQSYNC` | eq + serrated | progressive (no offset) | **CRT monitors** |
+  | `cathode_ray_interlace` | `TV_INTERLACE` | eq + serrated | interlaced | strict digital inputs |
+
+  - **Default = flat broad-pulse vsync** (`emit_vsync_line`: BLACK / SYNC(`VSYNC_LOW_PX`) / BLACK for
+    `TV_VSYNC_LINES`, then `TV_BLANK_TOP` blank lines). Locks ROCK-SOLID on forgiving analog TVs.
+    **Do not "improve" it** — a "standards-shaped" vsync was once tried on the default path and
+    measurably *degraded* stability on a forgiving TV (Starfield/Boing glitches) for no benefit. The
+    flat vsync is empirically best there. Keep eq/serration OFF the default.
+  - **`TV_EQSYNC` = the CRT fix.** A CRT's sync separator / horizontal-AFC needs half-line-rate
+    equalising pulses + a serrated broad vsync to hold vertical + horizontal lock *through* the
+    vertical interval; a flat vsync rolls/tears on it (diagnosed from a user's scope trace vs a
+    known-good PAL source). This build adds exactly that, and — crucially — stays **progressive**, so
+    it has the SAME total line count / active-region start / `FRAME_WORDS` as the flat build: **no
+    vertical-position offset**, only the pulse shapes differ (verified by arithmetic + `cmp` that the
+    default uf2 is byte-unchanged). This is the clean, offset-free build to give CRT users.
+  - The eq/serration helpers (`emit_equalising_line`/`emit_serrated_vsync_line`) and the ordered
+    eq→serrated→eq→blank vertical interval are in `build_frame_words` under `#ifdef TV_EQSYNC`; the flat
+    path is the `#else`. Both carve their lines from the `TV_VSYNC_LINES + TV_BLANK_TOP` budget so
+    `TV_TOTAL_LINES` / `FRAME_WORDS` never change.
 
 ### Interlace — the optional `-DTV_INTERLACE` variant (Tier-2)
 For sets that demand true 2:1 interlace, build with `-DTV_INTERLACE` (the `cathode_ray_interlace` /
@@ -112,11 +128,16 @@ cd releases/64_cathode/build
 $CMAKE -G Ninja -S .. -B .
 # definitive build (rm forces a real compile so the size report is accurate):
 rm -f CMakeFiles/cathode_ray.dir/main.cpp.obj cathode_ray.elf cathode_ray.uf2
-$CMAKE --build . --target cathode_ray            # PAL  → cathode_ray.uf2
-$CMAKE --build . --target cathode_ray_ntsc       # NTSC → cathode_ray_ntsc.uf2
-cp cathode_ray.uf2 ../ ; cp cathode_ray_ntsc.uf2 ../
+$CMAKE --build . --target cathode_ray                  # PAL  flat vsync     → cathode_ray.uf2
+$CMAKE --build . --target cathode_ray_ntsc             # NTSC flat vsync     → cathode_ray_ntsc.uf2
+$CMAKE --build . --target cathode_ray_eqsync           # PAL  eq-sync (CRT)  → cathode_ray_eqsync.uf2
+$CMAKE --build . --target cathode_ray_eqsync_ntsc      # NTSC eq-sync (CRT)  → cathode_ray_eqsync_ntsc.uf2
+$CMAKE --build . --target cathode_ray_interlace        # PAL  interlace      → cathode_ray_interlace.uf2
+$CMAKE --build . --target cathode_ray_interlace_ntsc   # NTSC interlace      → cathode_ray_interlace_ntsc.uf2
+cp cathode_ray*.uf2 ../
 ```
-Both targets are built from the same `main.cpp`; NTSC just adds `-DTV_NTSC` (see CMakeLists).
+All six targets build from the same `main.cpp`; NTSC adds `-DTV_NTSC`, the CRT builds add `-DTV_EQSYNC`,
+the interlace builds add `-DTV_INTERLACE` (which implies `TV_EQSYNC`). See the sync-config table above.
 Typical footprint: FLASH ~4 %, RAM ~77 % of the RP2040. RAM is the constraint to watch — see
 §6.
 

@@ -147,6 +147,21 @@ static_assert(FB_HEIGHT % GREY_SCALE == 0, "GREY_SCALE must divide FB_HEIGHT");
 //   PAL : 448×312 = 139776 px → 8736 words.   NTSC: 445×262 = 116590 → 7287 words.
 #define FRAME_WORDS         ((LINE_TOTAL_PX * TV_TOTAL_LINES + 15) / 16)
 
+// ── Sync configuration: three builds from two independent flags ──────────────
+//   (none)          default   → flat broad-pulse vsync, progressive. Rock-solid on
+//                              forgiving analog TVs/flatscreens. The shipped scheme.
+//   -DTV_EQSYNC     eq-sync    → equalising + serrated vertical sync, still progressive.
+//                              For CRTs whose sync separator needs the half-line-rate pulses
+//                              to hold vertical/horizontal lock (a flat vsync rolls on them).
+//                              No interlace, so NO vertical-position offset.
+//   -DTV_INTERLACE  interlace  → eq-sync PLUS true 2:1 interlace (per-field DMA). For strict
+//                              digital inputs that demand interlaced timing.
+// TV_INTERLACE implies TV_EQSYNC (interlace uses the eq/serrated vertical interval too). The
+// vsync SHAPE keys on TV_EQSYNC; the field-toggle/DMA machinery keys on TV_INTERLACE.
+#if defined(TV_INTERLACE) && !defined(TV_EQSYNC)
+#define TV_EQSYNC
+#endif
+
 // ── True 2:1 interlace (optional, -DTV_INTERLACE) ────────────────────────────
 // Progressive (default): every frame is TV_TOTAL_LINES lines → one fixed FRAME_WORDS.
 // Interlaced: alternate an EVEN field (TV_TOTAL_LINES lines) and an ODD field (one line
@@ -497,17 +512,17 @@ static void build_frame_words(int back, bool invert) {
         emit_const(BLACK, LINE_BP_PX + LINE_AV_PX);
     };
 
-    // The default (progressive) build keeps the ORIGINAL flat broad-pulse vsync — forgiving
-    // analog TVs/CRTs lock to it ROCK-SOLID. The "standards-shaped" equalising/serrated vsync
-    // (interlace build only) measurably DEGRADED composite vertical stability on a forgiving TV
-    // (occasional glitches in busy modes) for no benefit — strict decoders didn't lock to it
-    // either. So the two builds now diverge on the vertical-interval shape.
+    // The vertical-interval SHAPE depends on the build (see the sync-configuration note up top):
+    //   - default: flat broad-pulse vsync — forgiving analog TVs/flatscreens lock to it ROCK-SOLID
+    //     (it measurably OUTPERFORMS eq/serration on a forgiving set — busy modes stay glitch-free).
+    //   - TV_EQSYNC / TV_INTERLACE: equalising + serrated vsync — needed by CRTs (and strict
+    //     decoders) whose sync separator wants half-line-rate pulses to hold lock through vsync.
 
-#ifdef TV_INTERLACE
-    // ── Standards-shaped vertical interval (equalising + serrated broad pulses) — INTERLACE ──
-    // Only for the interlace build (strict decoders want these). Both helpers emit pulses at
-    // TWICE line rate (once per half-line) and MUST sum to exactly LINE_TOTAL_PX — the second
-    // half absorbs the odd-pixel remainder (LINE_TOTAL_PX is odd on NTSC) so FRAME_WORDS holds.
+#ifdef TV_EQSYNC
+    // ── Standards-shaped vertical interval (equalising + serrated broad pulses) ──
+    // For CRTs / strict decoders. Both helpers emit pulses at TWICE line rate (once per half-line)
+    // and MUST sum to exactly LINE_TOTAL_PX — the second half absorbs the odd-pixel remainder
+    // (LINE_TOTAL_PX is odd on NTSC) so FRAME_WORDS holds. Progressive unless TV_INTERLACE also set.
 
     // Equalising line: a narrow SYNC pulse at the start of each half-line, rest BLACK.
     auto emit_equalising_line = [&]() {

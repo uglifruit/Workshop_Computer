@@ -54,11 +54,25 @@ add_executable(cathode_ray_ntsc main.cpp)
 cathode_target(cathode_ray_ntsc)
 target_compile_definitions(cathode_ray_ntsc PRIVATE TV_NTSC)
 
+# ── CRT variant: equalising + serrated vertical sync, PROGRESSIVE (add -DTV_EQSYNC) ─────────
+# For CRT monitors whose sync separator needs proper half-line-rate equalising/serrated pulses
+# to hold vertical + horizontal lock through the vertical interval (the default flat-vsync build
+# rolls/tears on them). This is progressive (no interlace) so there is NO vertical-position
+# offset. The default cathode_ray.uf2 is unchanged (TV_EQSYNC off) — separate named uf2s.
+add_executable(cathode_ray_eqsync main.cpp)
+cathode_target(cathode_ray_eqsync)
+target_compile_definitions(cathode_ray_eqsync PRIVATE TV_EQSYNC)
+
+add_executable(cathode_ray_eqsync_ntsc main.cpp)
+cathode_target(cathode_ray_eqsync_ntsc)
+target_compile_definitions(cathode_ray_eqsync_ntsc PRIVATE TV_NTSC TV_EQSYNC)
+
 # ── EXPERIMENTAL: true 2:1 interlace variants (add -DTV_INTERLACE) ──────────────────────────
 # Separate, deliberately-named targets so the default cathode_ray.uf2 / cathode_ray_ntsc.uf2
 # stay the known-good progressive builds. TV_INTERLACE is off unless built via these targets,
 # so the standard builds are byte-for-byte unaffected by the interlace code. Flash these only
 # to test interlace on a strict component input; keep the plain uf2 as the safe fallback.
+# (TV_INTERLACE auto-defines TV_EQSYNC — interlace uses the eq/serrated vertical interval too.)
 add_executable(cathode_ray_interlace main.cpp)
 cathode_target(cathode_ray_interlace)
 target_compile_definitions(cathode_ray_interlace PRIVATE TV_INTERLACE)
