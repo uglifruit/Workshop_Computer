@@ -1,5 +1,9 @@
 # ZX + OneBit — for the Music Thing Workshop Computer
 
+**A ZX Spectrum inside your modular.**
+Patch gates and CV into Spectrum games and programs.
+Patch the beeper, border, AY sound and live memory back out.
+
 A program card for the **Music Thing Modular Workshop System Computer** that carries
 **two different instruments in one firmware**, chosen at power-on:
 
